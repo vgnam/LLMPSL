@@ -8,6 +8,7 @@ from typing import List, Dict
 from .population import Population
 from ...base import Function
 from ...tools.profiler import ProfilerBase
+from ...tools.report_metrics import write_report
 
 
 class EoHProfiler(ProfilerBase):
@@ -30,6 +31,10 @@ class EoHProfiler(ProfilerBase):
         if self._log_dir:
             self._ckpt_dir = os.path.join(self._log_dir, 'population')
             os.makedirs(self._ckpt_dir, exist_ok=True)
+
+    def finish(self):
+        if self._log_dir:
+            write_report(self._log_dir)
 
     def register_population(self, pop: Population):
         try:

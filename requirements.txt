@@ -3,6 +3,7 @@ scipy
 numba
 requests
 openai
+litellm
 torch
 tensorboard
 wandb
