@@ -1,0 +1,8 @@
+python main.py                 # defaults to llmpsl
+python main.py --method llmpsl
+python main.py --method mpage
+
+It still works with provider selection:
+
+MISTRAL_API_KEY=... LLM_PROVIDER=codestral-2508 python main.py --method mpage
+NVIDIA_API_KEY=... LLM_PROVIDER=gpt-oss-120b python main.py --method llmpsl

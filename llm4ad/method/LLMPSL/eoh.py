@@ -4,6 +4,7 @@ import json
 import re
 import time
 import traceback
+import hashlib
 
 from .population import Population
 from .profiler import EoHProfiler
@@ -43,6 +44,9 @@ class LLMPSL(_LLMPFGMPaGE):
         self._smooth_mu = smooth_mu
         self._use_psl_interpolation = use_psl_interpolation
         self._use_novelty_repair = use_novelty_repair
+        self._llm_attempt_count = 0
+        self._accepted_sample_count = 0
+        self._rejected_sample_count = 0
 
         # LLMPFG creates its population before adjusting pop_size. Replace it
         # with the final LLMPSL population and preference memory.
@@ -57,6 +61,39 @@ class LLMPSL(_LLMPFGMPaGE):
             smooth_set_scalarization=self._smooth_set_scalarization,
             smooth_mu=self._smooth_mu,
         )
+
+    def _logger(self):
+        if self._profiler is not None and hasattr(self._profiler, "get_logger"):
+            return self._profiler.get_logger()
+        return None
+
+    @staticmethod
+    def _short_text(value, limit=300):
+        if value is None:
+            return ""
+        text = " ".join(str(value).split())
+        if len(text) <= limit:
+            return text
+        return text[: limit - 3] + "..."
+
+    @staticmethod
+    def _function_summary(func: Function | None):
+        if func is None:
+            return "function=None"
+        func_str = str(func).strip()
+        digest = hashlib.sha1(func_str.encode("utf-8")).hexdigest()[:10]
+        body_lines = len([line for line in (func.body or "").splitlines() if line.strip()])
+        return (
+            f"name={getattr(func, 'name', '<unknown>')} "
+            f"body_lines={body_lines} chars={len(func_str)} sha1={digest}"
+        )
+
+    def _log_event(self, event, **fields):
+        logger = self._logger()
+        if logger is None:
+            return
+        parts = [f"{key}={value}" for key, value in fields.items()]
+        logger.info("[LLMPSL:%s] %s", event, " ".join(parts))
 
     def _continue_loop(self):
         if self._max_generations is None and self._max_sample_nums is None:
@@ -112,10 +149,25 @@ class LLMPSL(_LLMPFGMPaGE):
             self._function_to_evolve,
             preference,
         )
-        thought, repaired = self._sampler.get_thought_and_function(prompt)
+        self._log_event(
+            "repair_requested",
+            preference=self._short_text(preference, 120),
+            candidate=self._function_summary(func),
+        )
+        try:
+            thought, repaired = self._sampler.get_thought_and_function(prompt)
+        except Exception as exc:
+            self._log_event("repair_llm_error", error=self._short_text(exc, 240))
+            return func
         if repaired is None:
+            self._log_event(
+                "repair_rejected",
+                reason="parse_failed",
+                response_preview=self._short_text(getattr(self._sampler, "last_response", None)),
+            )
             return func
         repaired.algorithm = thought
+        self._log_event("repair_accepted", repaired=self._function_summary(repaired))
         return repaired
 
     def _extend_score_with_novelty(self, func: Function, score):
@@ -137,13 +189,63 @@ class LLMPSL(_LLMPFGMPaGE):
 
     def _sample_evaluate_register(self, prompt, preference=None):
         """Generate, evaluate, add CodeBLEU novelty, and register one program."""
+        self._llm_attempt_count += 1
+        attempt = self._llm_attempt_count
+        operator = self._infer_operator_name(prompt)
+        self._log_event(
+            "sample_start",
+            attempt=attempt,
+            operator=operator,
+            preference=self._short_text(preference, 120),
+            prompt_chars=len(str(prompt)),
+        )
         sample_start = time.time()
-        thought, func = self._sampler.get_thought_and_function(prompt)
+        try:
+            thought, func = self._sampler.get_thought_and_function(prompt)
+        except Exception as exc:
+            self._rejected_sample_count += 1
+            self._log_event(
+                "sample_rejected",
+                attempt=attempt,
+                operator=operator,
+                reason="llm_call_error",
+                error=self._short_text(exc, 300),
+            )
+            return
         sample_time = time.time() - sample_start
-        if thought is None or func is None:
+        if thought is None:
+            self._rejected_sample_count += 1
+            self._log_event(
+                "sample_rejected",
+                attempt=attempt,
+                operator=operator,
+                reason="missing_algorithm_block",
+                sample_time=f"{sample_time:.3f}",
+                response_preview=self._short_text(getattr(self._sampler, "last_response", None)),
+            )
+            return
+        if func is None:
+            self._rejected_sample_count += 1
+            self._log_event(
+                "sample_rejected",
+                attempt=attempt,
+                operator=operator,
+                reason="function_parse_failed",
+                sample_time=f"{sample_time:.3f}",
+                response_preview=self._short_text(getattr(self._sampler, "last_response", None)),
+            )
             return
 
         if self._population.has_duplicate_function(func):
+            self._rejected_sample_count += 1
+            self._log_event(
+                "sample_rejected",
+                attempt=attempt,
+                operator=operator,
+                reason="duplicate_function",
+                sample_time=f"{sample_time:.3f}",
+                candidate=self._function_summary(func),
+            )
             return
 
         func.algorithm = thought
@@ -154,15 +256,47 @@ class LLMPSL(_LLMPFGMPaGE):
             self._template_program,
         )
         if program is None:
+            self._rejected_sample_count += 1
+            self._log_event(
+                "sample_rejected",
+                attempt=attempt,
+                operator=operator,
+                reason="program_conversion_failed",
+                sample_time=f"{sample_time:.3f}",
+                candidate=self._function_summary(func),
+            )
             return
 
-        score, eval_time = self._evaluation_executor.submit(
-            self._evaluator.evaluate_program_record_time,
-            program,
-        ).result()
+        try:
+            score, eval_time = self._evaluation_executor.submit(
+                self._evaluator.evaluate_program_record_time,
+                program,
+            ).result()
+        except Exception as exc:
+            self._rejected_sample_count += 1
+            self._log_event(
+                "sample_rejected",
+                attempt=attempt,
+                operator=operator,
+                reason="evaluation_exception",
+                sample_time=f"{sample_time:.3f}",
+                candidate=self._function_summary(func),
+                error=self._short_text(exc, 300),
+            )
+            return
 
         score = self._extend_score_with_novelty(func, score)
         if score is None:
+            self._rejected_sample_count += 1
+            self._log_event(
+                "sample_rejected",
+                attempt=attempt,
+                operator=operator,
+                reason="evaluation_returned_none",
+                sample_time=f"{sample_time:.3f}",
+                eval_time=f"{eval_time:.3f}" if eval_time is not None else None,
+                candidate=self._function_summary(func),
+            )
             return
 
         func.score = score
@@ -175,7 +309,38 @@ class LLMPSL(_LLMPFGMPaGE):
                 self._profiler.register_population(self._population)
 
         self._tot_sample_nums += 1
+        self._accepted_sample_count += 1
+        self._log_event(
+            "sample_accepted",
+            attempt=attempt,
+            operator=operator,
+            sample_order=self._tot_sample_nums,
+            sample_time=f"{sample_time:.3f}",
+            eval_time=f"{eval_time:.3f}" if eval_time is not None else None,
+            score=self._short_text(score, 160),
+            candidate=self._function_summary(func),
+            accepted=self._accepted_sample_count,
+            rejected=self._rejected_sample_count,
+        )
         self._population.register_function(func)
+
+    @staticmethod
+    def _infer_operator_name(prompt):
+        prompt_str = str(prompt)
+        markers = (
+            ("interpolate", "interpolate"),
+            ("extrapolate", "extrapolate"),
+            ("E1", "e1"),
+            ("E2", "e2"),
+            ("M1", "m1"),
+            ("M2", "m2"),
+            ("initial", "i1"),
+        )
+        lower_prompt = prompt_str.lower()
+        for marker, name in markers:
+            if marker.lower() in lower_prompt:
+                return name
+        return "unknown"
 
     def _suggestions_for(self, indivs, preference):
         if not self.review:
@@ -280,7 +445,8 @@ class LLMPSL(_LLMPFGMPaGE):
                         break
             except KeyboardInterrupt:
                 break
-            except Exception:
+            except Exception as exc:
+                self._log_event("evolution_loop_error", error=self._short_text(exc, 300))
                 if self._debug_mode:
                     traceback.print_exc()
                     exit()
@@ -304,7 +470,8 @@ class LLMPSL(_LLMPFGMPaGE):
                 if self._tot_sample_nums > self._initial_sample_nums_max:
                     print(f"Warning: Initialization not accomplished in {self._initial_sample_nums_max} samples !!!")
                     break
-            except Exception:
+            except Exception as exc:
+                self._log_event("init_loop_error", error=self._short_text(exc, 300))
                 if self._debug_mode:
                     traceback.print_exc()
                     exit()

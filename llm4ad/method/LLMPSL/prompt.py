@@ -23,6 +23,19 @@ class LLMPSLPrompt:
         return ""
 
     @classmethod
+    def _implementation_contract(cls) -> str:
+        return """Implementation contract:
+- Return exactly one boxed algorithm description followed by exactly one Python function implementation.
+- Do not wrap the code in Markdown fences and do not add text after the function.
+- Keep the exact function name, signature, arguments, and return type shown below.
+- The generated function must be self-contained: every helper, score, threshold, or temporary variable it uses must be defined inside the function body, unless it is one of the imports or arguments visible in the template.
+- Do not assume hidden global state, previous archive statistics, external helper functions, or prompt-only preference labels exist at runtime.
+- Use the archive entries as `(solution, objective)` pairs; copy a selected solution before modifying it.
+- Always return a feasible neighbor with the same length and node set as the selected tour. If a move cannot be applied, return a copied valid tour.
+- Examples of invalid patterns: calling `make_neighbor(base)` without defining `make_neighbor`; using a score variable before assigning it; returning a list with duplicated or missing nodes; outputting only prose without the function.
+- Examples of valid patterns: define a small nested helper inside `select_neighbor`; compute any selection weights from `archive`; use `np.copy`, `np.random`, or `random`; repair a candidate by replacing missing nodes with unused nodes."""
+
+    @classmethod
     def _preference_block(cls, preference: Sequence[float] | None) -> str:
         if preference is None:
             return ""
@@ -43,6 +56,9 @@ class LLMPSLPrompt:
             "lambda_1 controls the emphasis on runtime efficiency, and lambda_2 controls the emphasis on code-level novelty."
         )
         lines.append("A larger lambda means the generated heuristic should pay more attention to that objective.")
+        lines.append(
+            "These lambda labels are prompt guidance only; do not reference them as runtime variables unless you explicitly assign local values in the generated function."
+        )
         lines.append(
             "Do not merely rename variables or reformat code for novelty; make a real algorithmic change in selection, move generation, repair, scoring, or randomization logic."
         )
@@ -105,7 +121,8 @@ Create one new heuristic program for the target preference above.
 1. First, describe your new algorithm and main steps in one long, detailed sentence. The description must be inside within boxed {{}}.
 2. Next, implement the following Python function:
 {str(temp_func)}
-Check syntax and code carefully before returning the final function. Do not give additional explanations."""
+{cls._implementation_contract()}
+Check syntax and code carefully before returning the final function."""
 
     @classmethod
     def get_prompt_suggestions_only(
@@ -158,7 +175,8 @@ Analyze the mechanisms of the given algorithms. Create a new heuristic for the t
 1. First, describe your new algorithm and main steps in one long, detailed sentence. The description must be inside within boxed {{}}.
 2. Next, implement the following Python function:
 {str(temp_func)}
-Check syntax and code carefully before returning the final function. Do not give additional explanations."""
+{cls._implementation_contract()}
+Check syntax and code carefully before returning the final function."""
 
         suggestions = cls._clean_suggestions(suggestions)
         return f"""{task_prompt}
@@ -175,7 +193,8 @@ Create a new heuristic based on these suggestions and the target Pareto preferen
 1. First, describe your new algorithm and main steps in one long, detailed sentence. The description must be inside within boxed {{}}.
 2. Next, implement the following Python function:
 {str(temp_func)}
-Check syntax and code carefully before returning the final function. Do not give additional explanations."""
+{cls._implementation_contract()}
+Check syntax and code carefully before returning the final function."""
 
     @classmethod
     def get_prompt_cluster(cls, task_prompt: str, indivs: List[Function], template_function: Function, suggestions=None):
@@ -231,7 +250,8 @@ Create a new heuristic for the target preference.
 2. Secondly, describe your new algorithm in one long, detailed sentence inside boxed {{}}.
 3. Thirdly, implement the following Python function:
 {str(temp_func)}
-Check syntax and code carefully before returning the final function. Do not give additional explanations."""
+{cls._implementation_contract()}
+Check syntax and code carefully before returning the final function."""
 
         return f"""{task_prompt}
 
@@ -245,7 +265,8 @@ Create a new algorithm that is motivated by the parents but has a different form
 2. Secondly, describe your new algorithm in one long, detailed sentence inside boxed {{}}.
 3. Thirdly, implement the following Python function:
 {str(temp_func)}
-Check syntax and code carefully before returning the final function. Do not give additional explanations."""
+{cls._implementation_contract()}
+Check syntax and code carefully before returning the final function."""
 
     @classmethod
     def get_prompt_m1(
@@ -274,7 +295,8 @@ Create a modified heuristic for the target preference. Focus on changing either 
 1. First, describe your new algorithm and main steps in one long, detailed sentence inside boxed {{}}.
 2. Next, implement the following Python function:
 {str(temp_func)}
-Check syntax and code carefully before returning the final function. Do not give additional explanations."""
+{cls._implementation_contract()}
+Check syntax and code carefully before returning the final function."""
 
     @classmethod
     def get_prompt_m2(
@@ -303,7 +325,8 @@ Identify the main algorithm parameters or thresholds and create a new version wi
 1. First, describe your new algorithm and main steps in one long, detailed sentence inside boxed {{}}.
 2. Next, implement the following Python function:
 {str(temp_func)}
-Check syntax and code carefully before returning the final function. Do not give additional explanations."""
+{cls._implementation_contract()}
+Check syntax and code carefully before returning the final function."""
 
     @classmethod
     def get_prompt_interpolate(
@@ -327,7 +350,8 @@ Perform Pareto interpolation in program space: synthesize a new heuristic that l
 1. First, describe your new algorithm and main steps in one long, detailed sentence inside boxed {{}}.
 2. Next, implement the following Python function:
 {str(temp_func)}
-Check syntax and code carefully before returning the final function. Do not give additional explanations."""
+{cls._implementation_contract()}
+Check syntax and code carefully before returning the final function."""
 
     @classmethod
     def get_prompt_extrapolate(
@@ -354,7 +378,8 @@ Perform Pareto extrapolation: move this heuristic further toward the target pref
 1. First, describe your new algorithm and main steps in one long, detailed sentence inside boxed {{}}.
 2. Next, implement the following Python function:
 {str(temp_func)}
-Check syntax and code carefully before returning the final function. Do not give additional explanations."""
+{cls._implementation_contract()}
+Check syntax and code carefully before returning the final function."""
 
     @classmethod
     def get_prompt_novelty_repair(
@@ -380,4 +405,5 @@ Rewrite it into a genuinely different algorithmic strategy while preserving the 
 1. First, describe your revised algorithm and main steps in one long, detailed sentence inside boxed {{}}.
 2. Next, implement the following Python function:
 {str(temp_func)}
-Check syntax and code carefully before returning the final function. Do not give additional explanations."""
+{cls._implementation_contract()}
+Check syntax and code carefully before returning the final function."""

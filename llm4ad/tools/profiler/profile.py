@@ -5,6 +5,7 @@ import sys
 import pytz
 import json
 import logging
+import hashlib
 from threading import Lock
 from datetime import datetime
 
@@ -69,7 +70,7 @@ class ProfilerBase:
         pass
 
     def get_logger(self):
-        pass
+        return self._logger_txt
 
     def resume(self, *args, **kwargs):
         pass
@@ -125,8 +126,7 @@ class ProfilerBase:
             # log attributes of the function
             if self._log_style == 'complex':
                 print(f'================= Evaluated Function =================')
-                print(f'{function_str}')
-                print(f'------------------------------------------------------')
+                print(f'{self._function_summary(function)}')
                 print(f'Score        : {str(score)}')
                 print(f'Sample time  : {str(sample_time)}')
                 print(f'Evaluate time: {str(evaluate_time)}')
@@ -149,6 +149,30 @@ class ProfilerBase:
 
         if evaluate_time:
             self._tot_evaluate_time += evaluate_time
+
+    def _function_summary(self, function: Function) -> str:
+        function_str = str(function).strip('\n')
+        function_hash = hashlib.sha1(function_str.encode('utf-8')).hexdigest()[:10]
+        body = getattr(function, 'body', '') or ''
+        body_lines = len([line for line in body.splitlines() if line.strip()])
+        signature = f"def {getattr(function, 'name', '<unknown>')}({getattr(function, 'args', '')})"
+        return (
+            f'Function     : {signature}\n'
+            f'Body lines   : {body_lines}\n'
+            f'Code chars   : {len(function_str)}\n'
+            f'Code sha1    : {function_hash}\n'
+            f'Algorithm    : {self._short_text(getattr(function, "algorithm", None), 240)}\n'
+            f'------------------------------------------------------'
+        )
+
+    @staticmethod
+    def _short_text(value, limit=240):
+        if value is None:
+            return ''
+        text = ' '.join(str(value).split())
+        if len(text) <= limit:
+            return text
+        return text[:limit - 3] + '...'
 
     def _create_log_path(self):
         self._samples_json_dir = os.path.join(self._log_dir, 'samples')

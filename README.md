@@ -27,7 +27,7 @@ pip install -r requirements.txt
 
 ## Setup
 
-Create two files in the project root with your API key:
+Create two files in the project root with your API key for the default provider:
 
 - **`secret.txt`** — main LLM for heuristic generation
 - **`secret_cluster.txt`** — LLM for semantic clustering (can be the same key)
@@ -38,6 +38,13 @@ Each file: one line, the API key only.
 
 ```bash
 python main.py
+```
+
+`LLMPSL` is the default method. To run the MPaGE baseline instead:
+
+```bash
+python main.py --method mpage
+python main.py --method llmpsl
 ```
 
 ## Configuration
@@ -51,7 +58,37 @@ Edit `main.py` to switch problems and tune parameters:
 - `BICVRPEvaluation` — Bi-objective CVRP
 - `BIKPEvaluation` — Bi-objective Knapsack
 
-**LLM** (OpenAI example):
+**LLM provider**
+
+Choose the model with `LLM_PROVIDER`. If unset, the code uses `gpt-4o-mini`.
+
+```bash
+# Current default through the configured OpenAI-compatible endpoint.
+LLM_PROVIDER=gpt-4o-mini python main.py
+
+# Mistral API, using the specific Codestral v25.08 model.
+MISTRAL_API_KEY=... LLM_PROVIDER=codestral-2508 python main.py
+
+# NVIDIA NIM API, using the specific gpt-oss-120b model.
+NVIDIA_API_KEY=... LLM_PROVIDER=gpt-oss-120b python main.py
+
+# Combine provider and method selection.
+MISTRAL_API_KEY=... LLM_PROVIDER=codestral-2508 python main.py --method mpage
+```
+
+Supported choices in `main.py`:
+
+| `LLM_PROVIDER` | API key env/file | Provider endpoint | Model sent through LiteLLM |
+|----------------|------------------|-------------------|----------------------------|
+| `gpt-4o-mini` | `LLM_API_KEY` or `secret.txt` | `https://api.vectorengine.ai/v1` | `openai/gpt-4o-mini` |
+| `codestral-2508` | `MISTRAL_API_KEY` or `secret_mistral.txt` | `https://api.mistral.ai/v1` | `mistral/codestral-2508` |
+| `gpt-oss-120b` | `NVIDIA_API_KEY` or `secret_nvidia.txt` | `https://integrate.api.nvidia.com/v1` | `openai/openai/gpt-oss-120b` |
+
+For clustering, the same key and model are used by default. To use a separate key, set `LLM_CLUSTER_API_KEY`, `MISTRAL_CLUSTER_API_KEY`, or `NVIDIA_CLUSTER_API_KEY`, or create the matching `secret_cluster.txt`, `secret_mistral_cluster.txt`, or `secret_nvidia_cluster.txt`.
+
+`openai/`, `mistral/`, and the first `openai/` in `openai/openai/gpt-oss-120b` are LiteLLM provider prefixes. The concrete upstream model IDs are `gpt-4o-mini`, `codestral-2508`, and `openai/gpt-oss-120b`.
+
+**LLM** (manual OpenAI example):
 
 ```python
 llm = HttpsApiOpenAI(

@@ -4,6 +4,7 @@ from __future__ import annotations
 import multiprocessing
 import sys
 import time
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -150,6 +151,12 @@ class SecureEvaluator:
             )
         return program_str
 
+    @staticmethod
+    def _log_eval_event(event: str, **fields):
+        logger = logging.getLogger('root')
+        parts = [f"{key}={value}" for key, value in fields.items()]
+        logger.info("[Evaluator:%s] %s", event, " ".join(parts))
+
     def evaluate_program(self, program: str | Program):
         try:
             program_str = str(program)
@@ -179,6 +186,11 @@ class SecureEvaluator:
                         process.join()
                     except:
                         # timeout
+                        self._log_eval_event(
+                            "timeout",
+                            timeout_seconds=self._evaluator.timeout_seconds,
+                            function=function_name,
+                        )
                         if self._debug_mode:
                             print(f'DEBUG: the evaluation time exceeds {self._evaluator.timeout_seconds}s.')
                         process.terminate()
@@ -192,6 +204,7 @@ class SecureEvaluator:
             else:
                 return self._evaluate(program_str, function_name)
         except Exception as e:
+            self._log_eval_event("exception", function="unknown", error=repr(e))
             if self._debug_mode:
                 print(e)
             return None
@@ -226,6 +239,11 @@ class SecureEvaluator:
                         process.join()
                     except:
                         # timeout
+                        self._log_eval_event(
+                            "timeout",
+                            timeout_seconds=self._evaluator.timeout_seconds,
+                            function=function_name,
+                        )
                         if self._debug_mode:
                             print(f'DEBUG: the evaluation time exceeds {self._evaluator.timeout_seconds}s.')
                         process.terminate()
@@ -242,6 +260,7 @@ class SecureEvaluator:
                 score = self._evaluate(program_str, function_name)
                 return score, time.time() - start
         except Exception as e:
+            self._log_eval_event("exception", function="unknown", error=repr(e))
             if self._debug_mode:
                 print(e)
             # return None and evaluate time
@@ -263,6 +282,7 @@ class SecureEvaluator:
             res = self._evaluator.evaluate_program(program_str, program_callable)
             result_queue.put(res)
         except Exception as e:
+            self._log_eval_event("safe_process_exception", function=function_name, error=repr(e))
             if self._debug_mode:
                 print(e)
             result_queue.put(None)
@@ -283,8 +303,8 @@ class SecureEvaluator:
             res = self._evaluator.evaluate_program(program_str, program_callable)
             return res
         except Exception as e:
+            self._log_eval_event("direct_exception", function=function_name, error=repr(e))
             if self._debug_mode:
                 print(e)
             return None
         
-

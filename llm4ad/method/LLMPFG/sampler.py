@@ -11,13 +11,16 @@ class EoHSampler:
     def __init__(self, sampler: LLM, template_program: str | Program):
         self._sampler = sampler
         self._template_program = template_program
+        self.last_response = None
 
     def get_thought(self, prompt: str):
         response = self._sampler.draw_sample(prompt)
+        self.last_response = response
         return response
 
     def get_thought_and_function(self, prompt: str) -> Tuple[str, Function]:
         response = self._sampler.draw_sample(prompt)
+        self.last_response = response
         thought = self.__class__.trim_thought_from_response(response)
         code = SampleTrimmer.trim_preface_of_function(response)
         function = SampleTrimmer.sample_to_function(code, self._template_program)
