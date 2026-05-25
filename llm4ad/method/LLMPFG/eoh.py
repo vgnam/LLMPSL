@@ -155,6 +155,8 @@ class MPaGE:
             self._evaluator.evaluate_program_record_time,
             program
         ).result()
+        if score is None:
+            return
 
         # score
         func.score = score
@@ -165,7 +167,7 @@ class MPaGE:
             self._profiler.register_function(func)
             if isinstance(self._profiler, EoHProfiler):
                 self._profiler.register_population(self._population)
-            self._tot_sample_nums += 1
+        self._tot_sample_nums += 1
 
         # register to the population
         self._population.register_function(func)
@@ -319,5 +321,3 @@ class MPaGE:
         # finish
         if self._profiler is not None:
             self._profiler.finish()
-
-
