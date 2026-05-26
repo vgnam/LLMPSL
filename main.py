@@ -11,18 +11,12 @@ from llm4ad.method.LLMPFG import MPaGE, EoHProfiler as MPaGEProfiler
 
 # LLMPSL method:
 from llm4ad.method.LLMPSL import LLMPSL, EoHProfiler as LLMPSLProfiler
-
-# If you want to run the bi_tsp_semo example, uncomment the following line:
-from llm4ad.task.optimization.bi_tsp_semo import BITSPEvaluation as ProblemEvaluation
-
-# If you want to run the bi_tsp_semo example, uncomment the following line:
-# from llm4ad.task.optimization.tri_tsp_semo import TRITSPEvaluation as ProblemEvaluation
-
-# If you want to run the bi_cvrp example, uncomment the following line:
-# from llm4ad.task.optimization.bi_cvrp import BICVRPEvaluation as ProblemEvaluation
-
-# If you want to run the bi_kp example, uncomment the following line:
-# from llm4ad.task.optimization.bi_kp import BIKPEvaluation as ProblemEvaluation
+from llm4ad.task.optimization.registry import PROBLEM_CONFIGS, build_problem
+from llm4ad.tools.evaluate_all_sizes import (
+    evaluate_log_all_sizes,
+    format_reports_table,
+    write_all_size_report,
+)
 
 
 LLM_PROFILES = {
@@ -107,10 +101,32 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run MPaGE or LLMPSL heuristic search.")
     parser.add_argument(
         "--method",
-        choices=("llmpsl", "mpage"),
+        choices=("llmpsl", "mpage", "both"),
         default="llmpsl",
         help="Search method to run. Defaults to llmpsl.",
     )
+    parser.add_argument(
+        "--problem",
+        choices=sorted(PROBLEM_CONFIGS),
+        default="bi_tsp",
+        help="Optimization problem to run.",
+    )
+    parser.add_argument("--problem-size", type=int, default=None, help="Training instance size.")
+    parser.add_argument("--n-instance", type=int, default=None, help="Number of training instances.")
+    parser.add_argument("--seed", type=int, default=2025, help="Dataset seed.")
+    parser.add_argument(
+        "--evaluate-all-sizes",
+        action="store_true",
+        help="After training, reevaluate the final population on all available sizes for the selected problem.",
+    )
+    parser.add_argument(
+        "--post-eval-top-k",
+        type=int,
+        default=0,
+        help="0 means evaluate the whole final population; otherwise evaluate the top-k by training score.",
+    )
+    parser.add_argument("--post-eval-seed", type=int, default=2025)
+    parser.add_argument("--post-eval-timeout-seconds", type=int, default=None)
     return parser.parse_args()
 
 
@@ -155,11 +171,37 @@ def main():
     args = parse_args()
 
     llm, llm_cluster = build_llms()
-    task = ProblemEvaluation()
-    method = build_method(args.method, llm, llm_cluster, task)
-    print(f"Using method={args.method}")
+    method_names = ["mpage", "llmpsl"] if args.method == "both" else [args.method]
+    post_eval_reports = []
 
-    method.run()
+    for method_name in method_names:
+        task = build_problem(
+            args.problem,
+            n_instance=args.n_instance,
+            problem_size=args.problem_size,
+            seed=args.seed,
+        )
+        method = build_method(method_name, llm, llm_cluster, task)
+        print(f"Using method={method_name}, problem={args.problem}")
+        method.run()
+
+        profiler = getattr(method, "_profiler", None)
+        log_dir = getattr(profiler, "_log_dir", None)
+        if args.evaluate_all_sizes and log_dir:
+            report = evaluate_log_all_sizes(
+                log_dir,
+                method=method_name,
+                problem=args.problem,
+                top_k=args.post_eval_top_k,
+                seed=args.seed,
+                eval_seed=args.post_eval_seed,
+                timeout_seconds=args.post_eval_timeout_seconds,
+            )
+            write_all_size_report(report)
+            post_eval_reports.append(report)
+
+    if post_eval_reports:
+        print(format_reports_table(post_eval_reports))
 
 
 if __name__ == '__main__':

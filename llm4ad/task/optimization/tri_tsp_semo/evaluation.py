@@ -68,7 +68,10 @@ def check_constraint(solution, problem_size):
 
 
 
-def evaluate(instance_data, n_instance, problem_size, ref_point, eva: callable):
+def evaluate(instance_data, n_instance, problem_size, ref_point, eva: callable, eval_seed: int | None = None):
+        if eval_seed is not None:
+            random.seed(eval_seed)
+            np.random.seed(eval_seed)
         obj_1 = np.ones(n_instance)
         obj_2 = np.ones(n_instance)
         obj_3 = np.ones(n_instance)
@@ -107,7 +110,17 @@ def evaluate(instance_data, n_instance, problem_size, ref_point, eva: callable):
 class TRITSPEvaluation(Evaluation):
     """Evaluator for the Bi-objective Traveling Salesman Problem (TSP) using a custom algorithm."""
 
-    def __init__(self, **kwargs):
+    def __init__(
+        self,
+        *,
+        n_instance: int = 20,
+        problem_size: int = 20,
+        seed: int = 2025,
+        eval_seed: int | None = None,
+        timeout_seconds: int = 90,
+        data_dir: str | None = None,
+        **kwargs,
+    ):
 
         """
             Args:
@@ -121,17 +134,25 @@ class TRITSPEvaluation(Evaluation):
             template_program=template_program,
             task_description=task_description,
             use_numba_accelerate=False,
-            timeout_seconds=90
+            timeout_seconds=timeout_seconds
         )
 
-        self.n_instance = 20
-        self.problem_size = 20 
-        getData = GetData(self.n_instance, self.problem_size)
+        self.n_instance = n_instance
+        self.problem_size = problem_size
+        self.eval_seed = eval_seed
+        getData = GetData(self.n_instance, self.problem_size, seed=seed, data_dir=data_dir)
         self._datasets = getData.generate_instances()
         self.ref_point = np.array([20.0,20.0, 20.0])
 
     def evaluate_program(self, program_str: str, callable_func: callable):
-        return evaluate(self._datasets,self.n_instance,self.problem_size, self.ref_point, callable_func)
+        return evaluate(
+            self._datasets,
+            self.n_instance,
+            self.problem_size,
+            self.ref_point,
+            callable_func,
+            self.eval_seed,
+        )
     
 import numpy as np
 from typing import List, Tuple

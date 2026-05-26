@@ -76,7 +76,10 @@ def is_feasible_solution(routes: List[np.ndarray], demand: np.ndarray, capacity:
         return False
     return True
 
-def evaluate(instance_data, n_instance, ref_point, capacity, evaluate_func: callable):
+def evaluate(instance_data, n_instance, ref_point, capacity, evaluate_func: callable, eval_seed: int | None = None):
+    if eval_seed is not None:
+        random.seed(eval_seed)
+        np.random.seed(eval_seed)
     obj_1 = np.ones(n_instance)
     obj_2 = np.ones(n_instance)
     for i, (coords, demand, distance_matrix) in enumerate(instance_data):
@@ -100,21 +103,39 @@ def evaluate(instance_data, n_instance, ref_point, capacity, evaluate_func: call
     return np.mean(obj_1), np.mean(obj_2)
 
 class BICVRPEvaluation(Evaluation):
-    def __init__(self, **kwargs):
+    def __init__(
+        self,
+        *,
+        n_instance: int = 8,
+        problem_size: int = 100,
+        seed: int = 2025,
+        eval_seed: int | None = None,
+        timeout_seconds: int = 90,
+        data_dir: str | None = None,
+        **kwargs,
+    ):
         super().__init__(
             template_program=template_program,
             task_description=task_description,
             use_numba_accelerate=False,
-            timeout_seconds=90
+            timeout_seconds=timeout_seconds
         )
-        self.n_instance = 8
-        self.problem_size = 100
-        getData = GetData(self.n_instance, self.problem_size)
+        self.n_instance = n_instance
+        self.problem_size = problem_size
+        self.eval_seed = eval_seed
+        getData = GetData(self.n_instance, self.problem_size, seed=seed, data_dir=data_dir)
         self._datasets, self.cap = getData.generate_instances()
         self.ref_point = np.array([80, 8])
 
     def evaluate_program(self, program_str: str, callable_func: callable):
-        return evaluate(self._datasets, self.n_instance, self.ref_point, self.cap, callable_func)
+        return evaluate(
+            self._datasets,
+            self.n_instance,
+            self.ref_point,
+            self.cap,
+            callable_func,
+            self.eval_seed,
+        )
     
 
 
