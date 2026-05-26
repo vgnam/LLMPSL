@@ -5,6 +5,7 @@ import numpy as np
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.bi_kp.get_instance import GetData
 from llm4ad.task.optimization.bi_kp.template import template_program, task_description
+from llm4ad.task.optimization.hv_utils import scale_hypervolume
 from pymoo.indicators.hv import HV
 import random
 import time
@@ -71,7 +72,7 @@ def evaluate(instance_data, n_instance, problem_size, ref_point, capacity, eva: 
         objs = np.array([obj for _, obj in Archive]) * (-1)
         hv_indicator = HV(ref_point=ref_point)
         hv_value = hv_indicator(objs)
-        obj_1[n_ins] = -hv_value
+        obj_1[n_ins] = -scale_hypervolume(hv_value, ref_point)
         obj_2[n_ins] = end - start
         n_ins += 1
     return np.mean(obj_1), np.mean(obj_2)
