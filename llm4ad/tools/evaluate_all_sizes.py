@@ -53,6 +53,21 @@ def _record_key(record: dict[str, Any]):
     return (score[0], second)
 
 
+def _record_code_novelty(record: dict[str, Any]) -> float | None:
+    score = _score_vector(record.get("score"))
+    if score is not None and len(score) >= 3:
+        return -score[2]
+
+    value = record.get("code_novelty")
+    try:
+        novelty = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(novelty):
+        return None
+    return novelty
+
+
 def _select_records(records: list[dict[str, Any]], top_k: int = 0) -> list[dict[str, Any]]:
     selected = [
         {**record, "_source_index": idx}
@@ -153,6 +168,9 @@ def _evaluate_one_record(record: dict[str, Any], evaluator) -> dict[str, Any]:
         "inner_hv": -score_vec[0],
         "wall_time": wall_time,
     }
+    code_novelty = _record_code_novelty(record)
+    if code_novelty is not None:
+        result["code_novelty"] = code_novelty
     if len(score_vec) > 1:
         result["runtime"] = score_vec[1]
     return result
@@ -181,8 +199,27 @@ def _summarize_evaluations(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
 
     runtimes = [item.get("runtime") for item in valid if item.get("runtime") is not None]
     if runtimes:
+        best_runtime_idx = min(
+            (idx for idx, item in enumerate(valid) if item.get("runtime") is not None),
+            key=lambda idx: valid[idx]["runtime"],
+        )
         summary["best_runtime"] = float(np.min(runtimes))
         summary["mean_runtime"] = float(np.mean(runtimes))
+        summary["function_sha1_at_best_runtime"] = valid[best_runtime_idx].get("function_sha1")
+
+    novelties = [
+        item.get("code_novelty")
+        for item in valid
+        if item.get("code_novelty") is not None
+    ]
+    if novelties:
+        best_novelty_idx = max(
+            (idx for idx, item in enumerate(valid) if item.get("code_novelty") is not None),
+            key=lambda idx: valid[idx]["code_novelty"],
+        )
+        summary["best_code_novelty"] = float(np.max(novelties))
+        summary["mean_code_novelty"] = float(np.mean(novelties))
+        summary["function_sha1_at_best_code_novelty"] = valid[best_novelty_idx].get("function_sha1")
     return summary
 
 
@@ -253,13 +290,14 @@ def write_all_size_report(report: dict[str, Any]) -> None:
         file.write(f"- `eval_seed`: {report['eval_seed']}\n\n")
         file.write(
             "| size | n_instance | valid | best_inner_hv | mean_inner_hv | "
-            "runtime_at_best_hv | best_runtime |\n"
+            "runtime_at_best_hv | best_runtime | best_code_novelty |\n"
         )
-        file.write("| --- | --- | --- | --- | --- | --- | --- |\n")
+        file.write("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
         for item in report["sizes"]:
             file.write(
                 "| {problem_size} | {n_instance} | {num_valid}/{num_evaluated} | "
-                "{best_inner_hv} | {mean_inner_hv} | {runtime_at_best_inner_hv} | {best_runtime} |\n".format(
+                "{best_inner_hv} | {mean_inner_hv} | {runtime_at_best_inner_hv} | "
+                "{best_runtime} | {best_code_novelty} |\n".format(
                     problem_size=item.get("problem_size"),
                     n_instance=item.get("n_instance"),
                     num_valid=item.get("num_valid", 0),
@@ -268,6 +306,7 @@ def write_all_size_report(report: dict[str, Any]) -> None:
                     mean_inner_hv=_fmt(item.get("mean_inner_hv")),
                     runtime_at_best_inner_hv=_fmt(item.get("runtime_at_best_inner_hv")),
                     best_runtime=_fmt(item.get("best_runtime")),
+                    best_code_novelty=_fmt(item.get("best_code_novelty")),
                 )
             )
 
@@ -282,13 +321,14 @@ def _fmt(value) -> str:
 
 def format_reports_table(reports: list[dict[str, Any]]) -> str:
     rows = [
-        "| method | problem | size | n_instance | valid | best_inner_hv | mean_inner_hv | runtime_at_best_hv |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| method | problem | size | n_instance | valid | best_inner_hv | mean_inner_hv | best_runtime | runtime_at_best_hv | best_code_novelty |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for report in reports:
         for item in report["sizes"]:
             rows.append(
-                "| {method} | {problem} | {problem_size} | {n_instance} | {valid} | {best} | {mean} | {runtime} |".format(
+                "| {method} | {problem} | {problem_size} | {n_instance} | {valid} | "
+                "{best} | {mean} | {best_runtime} | {runtime} | {best_code_novelty} |".format(
                     method=report["method"],
                     problem=report["problem"],
                     problem_size=item.get("problem_size"),
@@ -296,7 +336,9 @@ def format_reports_table(reports: list[dict[str, Any]]) -> str:
                     valid=f"{item.get('num_valid', 0)}/{item.get('num_evaluated', 0)}",
                     best=_fmt(item.get("best_inner_hv")),
                     mean=_fmt(item.get("mean_inner_hv")),
+                    best_runtime=_fmt(item.get("best_runtime")),
                     runtime=_fmt(item.get("runtime_at_best_inner_hv")),
+                    best_code_novelty=_fmt(item.get("best_code_novelty")),
                 )
             )
     return "\n".join(rows)
