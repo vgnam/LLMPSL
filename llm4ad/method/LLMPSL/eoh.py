@@ -97,7 +97,7 @@ class LLMPSL(_LLMPFGMPaGE):
 
     def _continue_loop(self):
         if self._max_generations is None and self._max_sample_nums is None:
-            return True
+            self._max_sample_nums = 200
         if self._max_generations is not None and self._population.generation >= self._max_generations:
             return False
         if self._max_sample_nums is not None and self._tot_sample_nums >= self._max_sample_nums:

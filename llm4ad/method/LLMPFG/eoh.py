@@ -67,6 +67,8 @@ class MPaGE:
         self._task_description_str = evaluation.task_description
         self._max_generations = max_generations
         self._max_sample_nums = max_sample_nums
+        if self._max_generations is None and self._max_sample_nums is None:
+            self._max_sample_nums = 200
         self._pop_size = pop_size
         self._selection_num = selection_num
         self._use_e2_operator = use_e2_operator
@@ -110,21 +112,22 @@ class MPaGE:
                 max_workers=num_evaluators
             )
 
-        # reset _initial_sample_nums_max 
-        self._initial_sample_nums_max = max(self._initial_sample_nums_max, 2 * pop_size)
-
         # adjust population size
-        if self._max_sample_nums >= 10000:
+        sample_budget = self._max_sample_nums
+        if sample_budget is None:
+            sample_budget = self._max_generations * max(1, self._pop_size or 10)
+
+        if sample_budget >= 10000:
             if self._pop_size == 0:
                 self._pop_size = 40
             elif abs(self._pop_size - 40) > 20:
                 print(f"Warning: population size {self._pop_size} is not suitable, please reset it to 40.")
-        elif self._max_sample_nums >= 1000:
+        elif sample_budget >= 1000:
             if self._pop_size == 0:
                 self._pop_size = 20
             elif abs(self._pop_size - 20) > 10:
                 print(f"Warning: population size {self._pop_size} is not suitable, please reset it to 20.")
-        elif self._max_sample_nums >= 200:
+        elif sample_budget >= 200:
             if self._pop_size == 0:
                 self._pop_size = 10
             elif abs(self._pop_size - 10) > 5:
@@ -134,6 +137,19 @@ class MPaGE:
                 self._pop_size = 5
             elif abs(self._pop_size - 5) > 5:
                 print(f"Warning: population size {self._pop_size} is not suitable, please reset it to 5.")
+
+        # reset _initial_sample_nums_max
+        self._initial_sample_nums_max = max(self._initial_sample_nums_max, 2 * self._pop_size)
+        self._population = Population(pop_size=self._pop_size)
+
+    def _continue_loop(self):
+        if self._max_generations is None and self._max_sample_nums is None:
+            self._max_sample_nums = 200
+        if self._max_generations is not None and self._population.generation >= self._max_generations:
+            return False
+        if self._max_sample_nums is not None and self._tot_sample_nums >= self._max_sample_nums:
+            return False
+        return True
 
     def _sample_evaluate_register(self, prompt):
         """Sample a function using the given prompt -> evaluate it by submitting to the process/thread pool ->
@@ -174,17 +190,7 @@ class MPaGE:
 
     def _thread_do_evolutionary_operator(self):
         def continue_loop():
-            if self._max_generations is None and self._max_sample_nums is None:
-                return True
-            continue_until_reach_gen = False
-            continue_until_reach_sample = False
-            if self._max_generations is not None:
-                if self._population.generation < self._max_generations:
-                    continue_until_reach_gen = True
-            if self._max_sample_nums is not None:
-                if self._tot_sample_nums < self._max_sample_nums:
-                    continue_until_reach_sample = True
-            return continue_until_reach_gen and continue_until_reach_sample
+            return self._continue_loop()
 
         while continue_loop():
             try:
@@ -273,7 +279,7 @@ class MPaGE:
         """Let a thread repeat {sample -> evaluate -> register to population}
         to initialize a population.
         """
-        while self._population.generation == 0:
+        while self._population.generation == 0 and self._continue_loop():
             try:
                 # get a new func using i1
                 prompt = EoHPrompt.get_prompt_i1(self._task_description_str, self._function_to_evolve)
