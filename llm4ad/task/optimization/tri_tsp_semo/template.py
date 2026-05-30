@@ -32,7 +32,7 @@ def select_neighbor(
     return new_solution
 '''
 
-task_description = "You are solving a Tri-objective Travelling Salesman Problem (bi-TSP), where each node has three different 2D coordinates: \
+task_description = "You are solving a Tri-objective Travelling Salesman Problem (tri-TSP), where each node has three different 2D coordinates: \
 (x1, y1), (x2, y2) and (x3, y3), representing its position in three objective spaces. The goal is to find a tour visiting each node exactly once and returning \
 to the starting node, while minimizing three objectives simultaneously: the total tour length in each coordinate space. \
 Given an archive of non-dominated solutions, where each solution is a numpy array representing a TSP tour, and its corresponding objective \

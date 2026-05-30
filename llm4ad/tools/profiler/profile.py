@@ -15,7 +15,7 @@ from ...base import Function
 class ProfilerBase:
     _num_samples = 0
 
-    process_start_time = datetime.now(pytz.timezone("Asia/Shanghai"))
+    process_start_time = datetime.now(pytz.timezone("Asia/Ho_Chi_Minh"))
     result_folder = process_start_time.strftime("%Y%m%d_%H%M%S")
 
     def __init__(self,

@@ -130,11 +130,21 @@ def parse_args():
     return parser.parse_args()
 
 
-def build_method(method_name, llm, llm_cluster, task):
+def method_log_dir(method_name, problem_name, problem_size):
+    method_dir = "MPaGE" if method_name == "mpage" else "LLMPSL"
+    return os.path.join("logs", problem_name, f"size_{problem_size}", method_dir)
+
+
+def build_method(method_name, llm, llm_cluster, task, *, problem_name, problem_size):
+    log_dir = method_log_dir(method_name, problem_name, problem_size)
     if method_name == "mpage":
         return MPaGE(llm=llm,
                      llm_cluster=llm_cluster,
-                     profiler=MPaGEProfiler(log_dir='logs/MPaGE', log_style='complex'),
+                     profiler=MPaGEProfiler(
+                         log_dir=log_dir,
+                         evaluation_name=problem_name,
+                         log_style='complex',
+                     ),
                      evaluation=task,
                      max_sample_nums=200,
                      max_generations=None,
@@ -146,7 +156,11 @@ def build_method(method_name, llm, llm_cluster, task):
 
     return LLMPSL(llm=llm,
                   llm_cluster=llm_cluster,
-                  profiler=LLMPSLProfiler(log_dir='logs/LLMPSL', log_style='complex'),
+                  profiler=LLMPSLProfiler(
+                      log_dir=log_dir,
+                      evaluation_name=problem_name,
+                      log_style='complex',
+                  ),
                   evaluation=task,
                   max_sample_nums=200,
                   max_generations=None,
@@ -172,6 +186,12 @@ def main():
 
     llm, llm_cluster = build_llms()
     method_names = ["mpage", "llmpsl"] if args.method == "both" else [args.method]
+    problem_config = PROBLEM_CONFIGS[args.problem]
+    resolved_problem_size = (
+        problem_config.default_problem_size
+        if args.problem_size is None
+        else args.problem_size
+    )
     post_eval_reports = []
 
     for method_name in method_names:
@@ -181,7 +201,14 @@ def main():
             problem_size=args.problem_size,
             seed=args.seed,
         )
-        method = build_method(method_name, llm, llm_cluster, task)
+        method = build_method(
+            method_name,
+            llm,
+            llm_cluster,
+            task,
+            problem_name=args.problem,
+            problem_size=resolved_problem_size,
+        )
         print(f"Using method={method_name}, problem={args.problem}")
         method.run()
 
