@@ -40,11 +40,11 @@ Each file: one line, the API key only.
 python main.py
 ```
 
-`LLMPSL` is the default method. To run the MPaGE baseline instead:
+`mpage` is the default method. To run other methods:
 
 ```bash
 python main.py --method mpage
-python main.py --method llmpsl
+python main.py --method llmpfgl
 ```
 
 ## Configuration

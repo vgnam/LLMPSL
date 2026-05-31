@@ -11,30 +11,34 @@ DATASET_SPECS = [
     {
         "name": "bi_kp",
         "path": ROOT / "bi_kp" / "get_instance.py",
-        "n_instance": 8,
+        "train_n_instance": 10,
         "train_size": 20,
-        "test_sizes": [50, 100, 150, 200],
+        "test_sizes": [50, 100, 150, 200, 300, 400],
+        "test_n_instances": [20, 20, 20, 20, 20, 20],
     },
     {
         "name": "bi_tsp_semo",
         "path": ROOT / "bi_tsp_semo" / "get_instance.py",
-        "n_instance": 4,
+        "train_n_instance": 10,
         "train_size": 20,
-        "test_sizes": [50, 100],
+        "test_sizes": [50, 100, 200],
+        "test_n_instances": [20, 20, 20],
     },
     {
         "name": "tri_tsp_semo",
         "path": ROOT / "tri_tsp_semo" / "get_instance.py",
-        "n_instance": 20,
+        "train_n_instance": 10,
         "train_size": 20,
-        "test_sizes": [50, 100],
+        "test_sizes": [50, 100, 200],
+        "test_n_instances": [20, 20, 20],
     },
     {
         "name": "bi_cvrp",
         "path": ROOT / "bi_cvrp" / "get_instance.py",
-        "n_instance": 8,
+        "train_n_instance": 10,
         "train_size": 20,
-        "test_sizes": [50, 100],
+        "test_sizes": [50, 100, 150, 200],
+        "test_n_instances": [20, 20, 20, 20],
     },
 ]
 
@@ -51,12 +55,21 @@ def main():
         name = spec["name"]
         get_instance_path = spec["path"]
         data_cls = load_get_data(get_instance_path)
-        sizes = [spec["train_size"]] + spec["test_sizes"]
-        for size in sizes:
-            data = data_cls(spec["n_instance"], size)
+
+        # Generate train set
+        train_size = spec["train_size"]
+        train_n_instance = spec["train_n_instance"]
+        data = data_cls(train_n_instance, train_size)
+        data.generate_instances()
+        print(f"{name} train size={train_size} n_instance={train_n_instance}: {data.data_path}")
+
+        # Generate test sets
+        test_sizes = spec["test_sizes"]
+        test_n_instances = spec["test_n_instances"]
+        for size, n_inst in zip(test_sizes, test_n_instances):
+            data = data_cls(n_inst, size)
             data.generate_instances()
-            split = "train" if size == spec["train_size"] else "test"
-            print(f"{name} {split} size={size}: {data.data_path}")
+            print(f"{name} test size={size} n_instance={n_inst}: {data.data_path}")
 
 
 if __name__ == "__main__":

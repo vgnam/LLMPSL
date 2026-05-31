@@ -35,8 +35,10 @@ class GetData():
                 capacity = 12.5
             elif 100 <= self.n_items <= 200:
                 capacity = 25
+            elif 200 < self.n_items <= 400:
+                capacity = 50
             else:
-                raise ValueError("Number of items must be between 20 and 200.")
+                raise ValueError("Number of items must be between 20 and 400.")
 
             instance_data.append((weights, values_obj1, values_obj2))
         return instance_data, capacity

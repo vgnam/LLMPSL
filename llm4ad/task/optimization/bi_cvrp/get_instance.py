@@ -41,8 +41,12 @@ class GetData():
                 capacity = 40
             elif 70 <= self.n_customers <= 100:
                 capacity = 50
+            elif 100 < self.n_customers <= 150:
+                capacity = 60
+            elif 150 < self.n_customers <= 200:
+                capacity = 70
             else:
-                raise ValueError("Number of customers must be between 20 and 100.")
+                raise ValueError("Number of customers must be between 20 and 200.")
 
             instance_data.append((coords, demands, distance_matrix))
 

@@ -9,8 +9,8 @@ from llm4ad.tools.llm.llm_api_litellm import HttpsApiLiteLLM4Cluster
 # LLMPFG baseline:
 from llm4ad.method.LLMPFG import MPaGE, EoHProfiler as MPaGEProfiler
 
-# LLMPSL method:
-from llm4ad.method.LLMPSL import LLMPSL, EoHProfiler as LLMPSLProfiler
+# LLMPFGL method:
+from llm4ad.method.LLMPFGL import LLMPFGL, EoHProfiler as PFGLProfiler
 from llm4ad.task.optimization.registry import PROBLEM_CONFIGS, build_problem
 from llm4ad.tools.evaluate_all_sizes import (
     evaluate_log_all_sizes,
@@ -98,12 +98,12 @@ def build_llms():
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run MPaGE or LLMPSL heuristic search.")
+    parser = argparse.ArgumentParser(description="Run MPaGE heuristic search.")
     parser.add_argument(
         "--method",
-        choices=("llmpsl", "mpage", "both"),
-        default="llmpsl",
-        help="Search method to run. Defaults to llmpsl.",
+        choices=("mpage", "llmpfg", "llmpfgl", "both"),
+        default="mpage",
+        help="Search method to run. llmpfg=MPaGE baseline, llmpfgl=Pareto-Front-Geometry-Learning. Defaults to mpage.",
     )
     parser.add_argument(
         "--problem",
@@ -131,10 +131,10 @@ def parse_args():
 
 
 def build_method(method_name, llm, llm_cluster, task):
-    if method_name == "mpage":
+    if method_name in ("mpage", "llmpfg"):
         return MPaGE(llm=llm,
                      llm_cluster=llm_cluster,
-                     profiler=MPaGEProfiler(log_dir='logs/MPaGE', log_style='complex'),
+                     profiler=MPaGEProfiler(log_dir='logs/LLMPFG', log_style='complex'),
                      evaluation=task,
                      max_sample_nums=200,
                      max_generations=None,
@@ -144,34 +144,32 @@ def build_method(method_name, llm, llm_cluster, task):
                      # llm_review=True
                   )
 
-    return LLMPSL(llm=llm,
-                  llm_cluster=llm_cluster,
-                  profiler=LLMPSLProfiler(log_dir='logs/LLMPSL', log_style='complex'),
-                  evaluation=task,
-                  max_sample_nums=200,
-                  max_generations=None,
-                  pop_size=10,
-                  num_samplers=1,
-                  num_evaluators=1,
-                  objective_num=3,
-                  novelty_k=8,
-                  novelty_threshold=0.9,
-                  prefer_codebleu=True,
-                  tchebycheff_rho=0.05,
-                  tchebycheff_set_size=3,
-                  smooth_set_scalarization=True,
-                  smooth_mu=0.05,
-                  use_psl_interpolation=True,
-                  use_novelty_repair=False,
-                  # llm_review=True
-               )
+    if method_name == "llmpfgl":
+        return LLMPFGL(llm=llm,
+                       llm_cluster=llm_cluster,
+                       profiler=PFGLProfiler(log_dir='logs/LLMPFGL', log_style='complex'),
+                       evaluation=task,
+                       max_sample_nums=200,
+                       max_generations=None,
+                       pop_size=10,
+                       num_samplers=1,
+                       num_evaluators=1,
+                       gp_refit_interval=3,
+                       n_theta_dense=200,
+                       # llm_review=True
+                    )
+
+    raise ValueError(f"Unknown method={method_name!r}")
 
 
 def main():
     args = parse_args()
 
     llm, llm_cluster = build_llms()
-    method_names = ["mpage", "llmpsl"] if args.method == "both" else [args.method]
+    if args.method == "both":
+        method_names = ["llmpfg", "llmpfgl"]
+    else:
+        method_names = [args.method]
     post_eval_reports = []
 
     for method_name in method_names:
@@ -185,9 +183,25 @@ def main():
         print(f"Using method={method_name}, problem={args.problem}")
         method.run()
 
+        # Report best train HV from final population
+        pop = getattr(method, "_population", None)
+        if pop and pop.population:
+            best_func = min(
+                pop.population,
+                key=lambda f: f.score[0]
+                if getattr(f, "score", None) and len(f.score) > 0
+                else float("inf"),
+            )
+            if getattr(best_func, "score", None) and len(best_func.score) > 0:
+                print(f"[Report] Best individual train score: {best_func.score}")
+                print(f"[Report] Best train HV: {-best_func.score[0]:.6f}")
+
         profiler = getattr(method, "_profiler", None)
         log_dir = getattr(profiler, "_log_dir", None)
         if args.evaluate_all_sizes and log_dir:
+            print(f"\n{'='*60}")
+            print(f"Post-evaluation on all available instance sizes for {method_name}...")
+            print(f"{'='*60}")
             report = evaluate_log_all_sizes(
                 log_dir,
                 method=method_name,
@@ -199,6 +213,19 @@ def main():
             )
             write_all_size_report(report)
             post_eval_reports.append(report)
+            # Print summary immediately
+            print(f"\n{'-'*60}")
+            print(f"Results for {method_name} on {args.problem}")
+            print(f"{'-'*60}")
+            print(f"{'Size':>8} | {'Instances':>10} | {'Valid':>8} | {'Best HV':>12} | {'Mean HV':>12}")
+            for item in report.get("sizes", []):
+                size = item.get("problem_size", "?")
+                n_ins = item.get("n_instance", "?")
+                valid = f"{item.get('num_valid',0)}/{item.get('num_evaluated',0)}"
+                best_hv = item.get("best_inner_hv")
+                mean_hv = item.get("mean_inner_hv")
+                print(f"{size:>8} | {n_ins:>10} | {valid:>8} | {best_hv:>12.6f} | {mean_hv:>12.6f}" if best_hv is not None else f"{size:>8} | {n_ins:>10} | {valid:>8} | {'N/A':>12} | {'N/A':>12}")
+            print(f"{'-'*60}\n")
 
     if post_eval_reports:
         print(format_reports_table(post_eval_reports))

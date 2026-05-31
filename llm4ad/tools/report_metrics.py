@@ -261,7 +261,7 @@ def _format_table(summaries: list[dict[str, Any]]) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Report inner/outer HV metrics for LLMPFG and LLMPSL logs.")
+    parser = argparse.ArgumentParser(description="Report inner/outer HV metrics for LLMPFG logs.")
     parser.add_argument("log_dirs", nargs="+", help="Method log directories to summarize.")
     parser.add_argument("--write", action="store_true", help="Write metrics_report.json/md into each log directory.")
     args = parser.parse_args()

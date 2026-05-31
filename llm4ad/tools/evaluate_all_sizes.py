@@ -22,7 +22,6 @@ from llm4ad.tools.report_metrics import load_final_records
 
 METHOD_LABELS = {
     "mpage": "MPaGE",
-    "llmpsl": "LLMPSL",
 }
 
 
@@ -345,12 +344,11 @@ def format_reports_table(reports: list[dict[str, Any]]) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate final MPaGE/LLMPSL populations on all available instance sizes.")
+    parser = argparse.ArgumentParser(description="Evaluate final MPaGE populations on all available instance sizes.")
     parser.add_argument("--problem", choices=sorted(PROBLEM_CONFIGS), default="bi_tsp")
-    parser.add_argument("--methods", nargs="+", choices=sorted(METHOD_LABELS), default=["mpage", "llmpsl"])
+    parser.add_argument("--methods", nargs="+", choices=sorted(METHOD_LABELS), default=["mpage"])
     parser.add_argument("--logs-root", default="logs")
     parser.add_argument("--mpage-log", default=None)
-    parser.add_argument("--llmpsl-log", default=None)
     parser.add_argument("--top-k", type=int, default=0, help="0 means evaluate the whole final population.")
     parser.add_argument("--seed", type=int, default=2025)
     parser.add_argument("--eval-seed", type=int, default=2025)
@@ -360,7 +358,6 @@ def main():
 
     explicit_logs = {
         "mpage": args.mpage_log,
-        "llmpsl": args.llmpsl_log,
     }
     reports = []
     for method in args.methods:
