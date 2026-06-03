@@ -152,7 +152,7 @@ def build_method(method_name, llm, llm_cluster, task, args):
                   )
 
     if method_name == "pbcllm":
-        timestamp = datetime.now(pytz.timezone("Asia/Shanghai")).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%Y%m%d_%H%M%S")
         size_str = str(args.problem_size) if args.problem_size is not None else "default"
         final_log_dir = f"logs/PBCLLM/{timestamp}_{size_str}"
         return PBCLLM(llm=llm,

@@ -14,6 +14,7 @@ class PBCProfiler(ProfilerBase):
         kwargs.setdefault("method_name", "PBCLLM")
         super().__init__(*args, **kwargs)
         self._pop_lock = Lock()
+        self._cur_gen = 0
         if self._log_dir:
             self._ckpt_dir = os.path.join(self._log_dir, "population")
             os.makedirs(self._ckpt_dir, exist_ok=True)
@@ -61,10 +62,13 @@ class PBCProfiler(ProfilerBase):
         if not self._log_dir:
             return
         with self._pop_lock:
+            if pop.generation == 0 or pop.generation == self._cur_gen:
+                return
             funcs_json = [self._record_payload(func) for func in pop.population]
             path = os.path.join(self._ckpt_dir, f"pop_{pop.generation}.json")
             with open(path, "w", encoding="utf-8") as file:
                 json.dump(funcs_json, file, indent=2)
+            self._cur_gen = pop.generation
 
     def finish(self):
         if not self._log_dir:

@@ -16,7 +16,7 @@ from docx.shared import RGBColor, Pt
 from docx.oxml import OxmlElement
 from docx.enum.table import WD_TABLE_ALIGNMENT
 
-process_start_time = datetime.now(pytz.timezone("Asia/Shanghai"))
+process_start_time = datetime.now(pytz.timezone("Asia/Bangkok"))
 result_folder = './logs/' + process_start_time.strftime("%Y%m%d_%H%M%S") + '{desc}'
 result_folder_ini = './logs/' + process_start_time.strftime("%Y%m%d_%H%M%S") + '{desc}'
 

@@ -365,6 +365,7 @@ class Population:
         self._elites_per_preference = int(elites_per_preference)
         self._population_hv = 0.0
         self._generation = 0
+        self._next_gen_pop: list[Function] = []
         self._lock = Lock()
 
     @property
@@ -382,7 +383,12 @@ class Population:
         if getattr(func, "score", None) is None or not getattr(func, "pbc", None):
             return
         with self._lock:
-            self._population.append(func)
+            self._next_gen_pop.append(func)
+            if len(self._next_gen_pop) < self._pop_size:
+                return
+
+            self._population.extend(self._next_gen_pop)
+            self._next_gen_pop = []
             self._refresh_behavior_novelty()
             self._population = self._pruned()
             self._refresh_population_metrics()
