@@ -1,6 +1,8 @@
 python main.py                 # defaults to mpage
 python main.py --method mpage
 python main.py --method pbcllm
+python main.py --method mpage --resume-latest --max-sample-nums 400
+python main.py --method mpage --resume-log-dir logs/LLMPFG/20260603_005015_Problem_MPaGE --max-sample-nums 400
 
 It still works with provider selection:
 

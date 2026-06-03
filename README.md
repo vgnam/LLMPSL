@@ -47,6 +47,14 @@ python main.py --method mpage
 python main.py --method pbcllm
 ```
 
+To continue an MPaGE/LLMPFG run from an existing log directory, set the new
+total sample budget higher than the saved sample count:
+
+```bash
+python main.py --method mpage --resume-log-dir logs/LLMPFG/20260603_005015_Problem_MPaGE --max-sample-nums 400
+python main.py --method mpage --resume-latest --max-sample-nums 400
+```
+
 ## Configuration
 
 Edit `main.py` to switch problems and tune parameters:

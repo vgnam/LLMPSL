@@ -10,6 +10,7 @@ from llm4ad.tools.llm.llm_api_litellm import HttpsApiLiteLLM
 from llm4ad.tools.llm.llm_api_litellm import HttpsApiLiteLLM4Cluster
 # LLMPFG baseline:
 from llm4ad.method.LLMPFG import MPaGE, EoHProfiler as MPaGEProfiler
+from llm4ad.method.LLMPFG.resume import resume_eoh
 
 # PBC-LLM method:
 from llm4ad.method.PBCLLM import PBCLLM, PBCProfiler
@@ -122,6 +123,22 @@ def parse_args():
     parser.add_argument("--n-instance", type=int, default=None, help="Number of training instances.")
     parser.add_argument("--seed", type=int, default=2025, help="Dataset seed.")
     parser.add_argument(
+        "--max-sample-nums",
+        type=int,
+        default=None,
+        help="Override the method sample budget. When resuming, set this higher than the saved sample count.",
+    )
+    parser.add_argument(
+        "--resume-log-dir",
+        default=None,
+        help="Resume MPaGE/LLMPFG from an existing log directory, or from its run_log.txt file.",
+    )
+    parser.add_argument(
+        "--resume-latest",
+        action="store_true",
+        help="Resume MPaGE/LLMPFG from the latest log directory under logs/LLMPFG.",
+    )
+    parser.add_argument(
         "--evaluate-all-sizes",
         action="store_true",
         help="After training, reevaluate the final population on all available sizes for the selected problem.",
@@ -137,17 +154,67 @@ def parse_args():
     return parser.parse_args()
 
 
+def _latest_resume_log_dir(method_name):
+    if method_name in ("mpage", "llmpfg"):
+        base_dir = os.path.join("logs", "LLMPFG")
+    else:
+        raise ValueError("--resume-latest is currently supported only for mpage/llmpfg.")
+
+    candidates = []
+    if os.path.isdir(base_dir):
+        for entry in os.scandir(base_dir):
+            if not entry.is_dir():
+                continue
+            samples_dir = os.path.join(entry.path, "samples")
+            population_dir = os.path.join(entry.path, "population")
+            if os.path.isdir(samples_dir) and os.path.isdir(population_dir):
+                candidates.append(entry)
+    if not candidates:
+        raise FileNotFoundError(f"No resumable log directory found under {base_dir}.")
+    return max(candidates, key=lambda entry: entry.stat().st_mtime).path
+
+
+def resolve_resume_log_dir(args):
+    if args.resume_log_dir and args.resume_latest:
+        raise ValueError("Use either --resume-log-dir or --resume-latest, not both.")
+    if not args.resume_log_dir and not args.resume_latest:
+        return None
+    if args.method == "both":
+        raise ValueError("Resume can be used with one method at a time, not --method both.")
+    if args.method == "pbcllm":
+        raise ValueError("Resume is currently supported only for mpage/llmpfg.")
+
+    log_dir = _latest_resume_log_dir(args.method) if args.resume_latest else args.resume_log_dir
+    log_dir = os.path.abspath(log_dir)
+    if os.path.isfile(log_dir):
+        log_dir = os.path.dirname(log_dir)
+    if not os.path.isdir(log_dir):
+        raise FileNotFoundError(f"Resume log directory does not exist: {log_dir}")
+    for child in ("samples", "population"):
+        child_path = os.path.join(log_dir, child)
+        if not os.path.isdir(child_path):
+            raise FileNotFoundError(f"Resume log directory is missing {child_path}")
+    return log_dir
+
+
 def build_method(method_name, llm, llm_cluster, task, args):
     if method_name in ("mpage", "llmpfg"):
+        profiler_kwargs = {
+            "log_dir": "logs/LLMPFG",
+            "log_style": "complex",
+        }
+        if args.resume_log_dir:
+            profiler_kwargs["final_log_dir"] = args.resume_log_dir
         return MPaGE(llm=llm,
                      llm_cluster=llm_cluster,
-                     profiler=MPaGEProfiler(log_dir='logs/LLMPFG', log_style='complex'),
+                     profiler=MPaGEProfiler(**profiler_kwargs),
                      evaluation=task,
-                     max_sample_nums=200,
+                     max_sample_nums=args.max_sample_nums if args.max_sample_nums is not None else 200,
                      max_generations=None,
                      pop_size=10,
                      num_samplers=1,
                      num_evaluators=1,
+                     resume_mode=bool(args.resume_log_dir),
                      # llm_review=True
                   )
 
@@ -164,7 +231,7 @@ def build_method(method_name, llm, llm_cluster, task, args):
                            final_log_dir=final_log_dir,
                       ),
                       evaluation=task,
-                      max_sample_nums=80,
+                      max_sample_nums=args.max_sample_nums if args.max_sample_nums is not None else 80,
                       pop_size=10,
                       selection_num=3,
                       num_samplers=1,
@@ -179,6 +246,7 @@ def build_method(method_name, llm, llm_cluster, task, args):
 
 def main():
     args = parse_args()
+    args.resume_log_dir = resolve_resume_log_dir(args)
 
     llm, llm_cluster = build_llms()
     if args.method == "both":
@@ -197,6 +265,9 @@ def main():
         )
         method = build_method(method_name, llm, llm_cluster, task, args)
         print(f"Using method={method_name}, problem={args.problem}")
+        if args.resume_log_dir:
+            print(f"Resuming {method_name} from {args.resume_log_dir}")
+            resume_eoh(method)
         method.run()
 
         # Report training summary from final population
