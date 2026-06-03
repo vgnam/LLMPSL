@@ -48,6 +48,38 @@ def random_solution(num_customers: int, capacity: float, demand: np.ndarray) -> 
     routes.append(np.array(current_route))
     return routes
 
+
+def _random_solution_rng(num_customers: int, capacity: float, demand: np.ndarray, rng: np.random.Generator) -> list[np.ndarray]:
+    customers = np.arange(1, num_customers + 1)
+    rng.shuffle(customers)
+    routes = []
+    current_route = [0]
+    current_load = 0.0
+    for customer in customers:
+        if current_load + demand[customer] <= capacity:
+            current_route.append(int(customer))
+            current_load += demand[customer]
+        else:
+            current_route.append(0)
+            routes.append(np.array(current_route))
+            current_route = [0, int(customer)]
+            current_load = demand[customer]
+    current_route.append(0)
+    routes.append(np.array(current_route))
+    return routes
+
+
+def estimate_reference_point(instance_data, capacity, samples_per_instance: int = 128, margin: float = 1.05):
+    rng = np.random.default_rng(3031 + len(instance_data))
+    objectives = []
+    for _, demand, distance_matrix in instance_data:
+        num_customers = len(demand) - 1
+        for _ in range(samples_per_instance):
+            routes = _random_solution_rng(num_customers, capacity, demand, rng)
+            objectives.append(evaluate_solution(routes, distance_matrix))
+    ref = np.max(np.array(objectives, dtype=float), axis=0)
+    return ref * margin
+
 def is_feasible_solution(routes: List[np.ndarray], demand: np.ndarray, capacity: float) -> bool:
     """
     Check if all routes satisfy the vehicle capacity constraint, visit each customer exactly once,
@@ -76,30 +108,75 @@ def is_feasible_solution(routes: List[np.ndarray], demand: np.ndarray, capacity:
         return False
     return True
 
-def evaluate(instance_data, n_instance, ref_point, capacity, evaluate_func: callable, eval_seed: int | None = None):
+def _copy_routes(routes: list[np.ndarray]) -> list[np.ndarray]:
+    return [route.copy() for route in routes]
+
+
+def _archive_objectives(archive):
+    return [list(map(float, obj)) for _, obj in archive]
+
+
+def evaluate(
+    instance_data,
+    n_instance,
+    ref_point,
+    capacity,
+    evaluate_func: callable,
+    eval_seed: int | None = None,
+    *,
+    return_mo_trace: bool = False,
+    trace_points: int = 21,
+):
     if eval_seed is not None:
         random.seed(eval_seed)
         np.random.seed(eval_seed)
     obj_1 = np.ones(n_instance)
     obj_2 = np.ones(n_instance)
+    final_list = []
+    archive_trajectories = []
+    total_iterations = 6000
+    checkpoints = set(np.linspace(0, total_iterations, trace_points, dtype=int).tolist())
     for i, (coords, demand, distance_matrix) in enumerate(instance_data):
         start = time.time()
         init_solutions = [random_solution(len(demand)-1, capacity, demand) for _ in range(10)]
         archive = [(s, evaluate_solution(s, distance_matrix)) for s in init_solutions]
-        for _ in range(6000):
-            s_prime = evaluate_func(archive, coords, demand, distance_matrix, capacity)
+        trajectory = []
+        if 0 in checkpoints:
+            trajectory.append(_archive_objectives(archive))
+        for iteration in range(1, total_iterations + 1):
+            archive_arg = [(_copy_routes(sol), obj) for sol, obj in archive]
+            s_prime = evaluate_func(
+                archive_arg,
+                coords.copy(),
+                demand.copy(),
+                distance_matrix.copy(),
+                capacity,
+            )
             if not is_feasible_solution(s_prime, demand, capacity):
+                if iteration in checkpoints:
+                    trajectory.append(_archive_objectives(archive))
                 continue
             f_prime = evaluate_solution(s_prime, distance_matrix)
             if not any(dominates(f, f_prime) for _, f in archive):
                 archive = [(s, f) for s, f in archive if not dominates(f_prime, f)]
                 archive.append((s_prime, f_prime))
+            if iteration in checkpoints:
+                trajectory.append(_archive_objectives(archive))
         end = time.time()
         objs = np.array([f for _, f in archive])
+        final_list.append(objs.tolist())
+        archive_trajectories.append(trajectory)
         hv_indicator = HV(ref_point=ref_point)
         hv_value = hv_indicator(objs)
         obj_1[i] = -scale_hypervolume(hv_value, ref_point)
         obj_2[i] = end - start
+    if return_mo_trace:
+        return {
+            "objective_num": 2,
+            "fronts": final_list,
+            "archive_trajectories": archive_trajectories,
+            "legacy_score": [float(np.mean(obj_1)), float(np.mean(obj_2))],
+        }
     return np.mean(obj_1), np.mean(obj_2)
 
 class BICVRPEvaluation(Evaluation):
@@ -112,6 +189,7 @@ class BICVRPEvaluation(Evaluation):
         eval_seed: int | None = None,
         timeout_seconds: int = 90,
         data_dir: str | None = None,
+        return_mo_trace: bool = False,
         **kwargs,
     ):
         super().__init__(
@@ -123,9 +201,12 @@ class BICVRPEvaluation(Evaluation):
         self.n_instance = n_instance
         self.problem_size = problem_size
         self.eval_seed = eval_seed
+        self.return_mo_trace = return_mo_trace
+        self.objective_num = 2
+        self.objective_labels = ("total_distance", "longest_route")
         getData = GetData(self.n_instance, self.problem_size, seed=seed, data_dir=data_dir)
         self._datasets, self.cap = getData.generate_instances()
-        self.ref_point = np.array([80, 8])
+        self.ref_point = estimate_reference_point(self._datasets, self.cap)
 
     def evaluate_program(self, program_str: str, callable_func: callable):
         return evaluate(
@@ -135,6 +216,7 @@ class BICVRPEvaluation(Evaluation):
             self.cap,
             callable_func,
             self.eval_seed,
+            return_mo_trace=self.return_mo_trace,
         )
     
 

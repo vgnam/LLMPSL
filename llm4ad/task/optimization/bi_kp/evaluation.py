@@ -45,39 +45,108 @@ def random_solution(weight_lst, capacity, problem_size):
     return np.array([1 if i in selected_items else 0 for i in range(problem_size)])
 
 
+def _random_solution_rng(weight_lst, capacity, problem_size, rng: np.random.Generator):
+    order = rng.permutation(problem_size)
+    selected_items = []
+    total_weight = 0.0
+    for item in order:
+        if total_weight + weight_lst[item] <= capacity:
+            selected_items.append(int(item))
+            total_weight += weight_lst[item]
+    return np.array([1 if i in selected_items else 0 for i in range(problem_size)])
+
+
+def estimate_reference_point(instance_data, capacity, problem_size, samples_per_instance: int = 128, margin: float = 0.05):
+    rng = np.random.default_rng(4049 + problem_size + len(instance_data))
+    objectives = []
+    for weight_lst, value1_lst, value2_lst in instance_data:
+        for _ in range(samples_per_instance):
+            sol = _random_solution_rng(weight_lst, capacity, problem_size, rng)
+            value = knapsack_value(sol, weight_lst, value1_lst, value2_lst, capacity)
+            objectives.append([-float(value[0]), -float(value[1])])
+    arr = np.array(objectives, dtype=float)
+    nadir = np.max(arr, axis=0)
+    span = np.maximum(np.max(arr, axis=0) - np.min(arr, axis=0), 1e-6)
+    return nadir + margin * span
+
+
 
     
 
 
-def evaluate(instance_data, n_instance, problem_size, ref_point, capacity, eva: callable, eval_seed: int | None = None):
+def _archive_objectives(archive):
+    # PBC-LLM uses minimization objectives; knapsack values are maximized.
+    return [[-float(obj[0]), -float(obj[1])] for _, obj in archive]
+
+
+def evaluate(
+    instance_data,
+    n_instance,
+    problem_size,
+    ref_point,
+    capacity,
+    eva: callable,
+    eval_seed: int | None = None,
+    *,
+    return_mo_trace: bool = False,
+    trace_points: int = 21,
+):
     if eval_seed is not None:
         random.seed(eval_seed)
         np.random.seed(eval_seed)
     obj_1 = np.ones(n_instance)
     obj_2 = np.ones(n_instance)
     n_ins = 0
+    final_list = []
+    archive_trajectories = []
+    total_iterations = 8000
+    checkpoints = set(np.linspace(0, total_iterations, trace_points, dtype=int).tolist())
     for weight_lst, value1_lst, value2_lst in instance_data:
         start = time.time()
         s = [random_solution(weight_lst, capacity, problem_size) for _ in range(20)]
         Archive = [(s_, knapsack_value(s_, weight_lst, value1_lst, value2_lst, capacity)) for s_ in s if knapsack_value(s_, weight_lst, value1_lst, value2_lst, capacity)[0] > -1e5]
-        for _ in range(8000):
-            s_prime = np.array(eva(Archive, weight_lst, value1_lst, value2_lst, capacity))
+        trajectory = []
+        if 0 in checkpoints:
+            trajectory.append(_archive_objectives(Archive))
+        for iteration in range(1, total_iterations + 1):
+            archive_arg = [(sol.copy(), obj) for sol, obj in Archive]
+            s_prime = np.array(
+                eva(
+                    archive_arg,
+                    weight_lst.copy(),
+                    value1_lst.copy(),
+                    value2_lst.copy(),
+                    capacity,
+                )
+            )
             f_s_prime = knapsack_value(s_prime, weight_lst, value1_lst, value2_lst, capacity)
 
             if f_s_prime[0] < -1e5:
-                print("Here")
+                if iteration in checkpoints:
+                    trajectory.append(_archive_objectives(Archive))
                 continue  # Skip infeasible
 
             if not any(dominates(f_a, f_s_prime) for _, f_a in Archive):
                 Archive = [(a, f_a) for a, f_a in Archive if not dominates(f_s_prime, f_a)]
                 Archive.append((s_prime, f_s_prime))
+            if iteration in checkpoints:
+                trajectory.append(_archive_objectives(Archive))
         end = time.time()
         objs = np.array([obj for _, obj in Archive]) * (-1)
+        final_list.append(objs.tolist())
+        archive_trajectories.append(trajectory)
         hv_indicator = HV(ref_point=ref_point)
         hv_value = hv_indicator(objs)
         obj_1[n_ins] = -scale_hypervolume(hv_value, ref_point)
         obj_2[n_ins] = end - start
         n_ins += 1
+    if return_mo_trace:
+        return {
+            "objective_num": 2,
+            "fronts": final_list,
+            "archive_trajectories": archive_trajectories,
+            "legacy_score": [float(np.mean(obj_1)), float(np.mean(obj_2))],
+        }
     return np.mean(obj_1), np.mean(obj_2)
 
 
@@ -93,6 +162,7 @@ class BIKPEvaluation(Evaluation):
         eval_seed: int | None = None,
         timeout_seconds: int = 90,
         data_dir: str | None = None,
+        return_mo_trace: bool = False,
         **kwargs,
     ):
         super().__init__(
@@ -104,9 +174,12 @@ class BIKPEvaluation(Evaluation):
         self.n_instance = n_instance
         self.problem_size = problem_size
         self.eval_seed = eval_seed
+        self.return_mo_trace = return_mo_trace
+        self.objective_num = 2
+        self.objective_labels = ("negative_value_1", "negative_value_2")
         getData = GetData(self.n_instance, self.problem_size, seed=seed, data_dir=data_dir)
         self._datasets, self.cap = getData.generate_instances() 
-        self.ref_point = np.array([-30, -30]) 
+        self.ref_point = estimate_reference_point(self._datasets, self.cap, self.problem_size) 
 
     def evaluate_program(self, program_str: str, callable_func: callable):
         return evaluate(
@@ -117,6 +190,7 @@ class BIKPEvaluation(Evaluation):
             self.cap,
             callable_func,
             self.eval_seed,
+            return_mo_trace=self.return_mo_trace,
         )
     
 import numpy as np

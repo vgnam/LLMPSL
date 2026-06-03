@@ -44,7 +44,7 @@ python main.py
 
 ```bash
 python main.py --method mpage
-python main.py --method llmpfgl
+python main.py --method pbcllm
 ```
 
 ## Configuration

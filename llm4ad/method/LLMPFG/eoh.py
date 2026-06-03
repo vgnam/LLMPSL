@@ -179,14 +179,16 @@ class MPaGE:
         func.evaluate_time = eval_time
         func.algorithm = thought
         func.sample_time = sample_time
+        self._tot_sample_nums += 1
+
+        # Register to the population before checkpointing it. Post-training
+        # population-front evaluation reads the latest population checkpoint.
+        self._population.register_function(func)
+
         if self._profiler is not None:
             self._profiler.register_function(func)
             if isinstance(self._profiler, EoHProfiler):
                 self._profiler.register_population(self._population)
-        self._tot_sample_nums += 1
-
-        # register to the population
-        self._population.register_function(func)
 
     def _thread_do_evolutionary_operator(self):
         def continue_loop():

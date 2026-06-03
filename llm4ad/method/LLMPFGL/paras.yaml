@@ -1,7 +1,0 @@
-name: LLMPFGL
-max_generations: 10
-max_sample_nums: 20
-pop_size: 5
-num_evaluators: 4
-gp_refit_interval: 3
-n_theta_dense: 200

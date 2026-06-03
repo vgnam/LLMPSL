@@ -22,6 +22,8 @@ from llm4ad.tools.report_metrics import load_final_records
 
 METHOD_LABELS = {
     "mpage": "MPaGE",
+    "llmpfg": "LLMPFG",
+    "pbcllm": "PBCLLM",
 }
 
 
