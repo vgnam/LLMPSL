@@ -25,6 +25,10 @@ from llm4ad.tools.evaluate_population_front import (
     format_population_front_table,
     write_population_front_report,
 )
+from llm4ad.tools.evaluate_behavior_novelty import (
+    evaluate_population_behavior_novelty,
+    write_behavior_novelty_report,
+)
 
 
 LLM_PROFILES = {
@@ -136,7 +140,7 @@ def parse_args():
     parser.add_argument(
         "--resume-latest",
         action="store_true",
-        help="Resume MPaGE/LLMPFG from the latest log directory under logs/LLMPFG.",
+        help="Resume MPaGE/LLMPFG from the latest log directory under logs/LLMPFG/<problem>.",
     )
     parser.add_argument(
         "--evaluate-all-sizes",
@@ -154,24 +158,38 @@ def parse_args():
     return parser.parse_args()
 
 
-def _latest_resume_log_dir(method_name):
+def _looks_like_log_dir(path):
+    samples_dir = os.path.join(path, "samples")
+    population_dir = os.path.join(path, "population")
+    return os.path.isdir(samples_dir) and os.path.isdir(population_dir)
+
+
+def _latest_resume_log_dir(method_name, problem):
     if method_name in ("mpage", "llmpfg"):
-        base_dir = os.path.join("logs", "LLMPFG")
+        search_roots = [
+            os.path.join("logs", "LLMPFG", problem),
+            os.path.join("logs", "LLMPFG"),
+        ]
     else:
         raise ValueError("--resume-latest is currently supported only for mpage/llmpfg.")
 
     candidates = []
-    if os.path.isdir(base_dir):
-        for entry in os.scandir(base_dir):
-            if not entry.is_dir():
+    seen = set()
+    for base_dir in search_roots:
+        if not os.path.isdir(base_dir):
+            continue
+        for root, _, _ in os.walk(base_dir):
+            if not _looks_like_log_dir(root):
                 continue
-            samples_dir = os.path.join(entry.path, "samples")
-            population_dir = os.path.join(entry.path, "population")
-            if os.path.isdir(samples_dir) and os.path.isdir(population_dir):
-                candidates.append(entry)
+            abs_root = os.path.abspath(root)
+            if abs_root in seen:
+                continue
+            seen.add(abs_root)
+            candidates.append(abs_root)
     if not candidates:
-        raise FileNotFoundError(f"No resumable log directory found under {base_dir}.")
-    return max(candidates, key=lambda entry: entry.stat().st_mtime).path
+        roots = ", ".join(search_roots)
+        raise FileNotFoundError(f"No resumable log directory found under: {roots}.")
+    return max(candidates, key=lambda path: os.stat(path).st_mtime)
 
 
 def resolve_resume_log_dir(args):
@@ -184,7 +202,7 @@ def resolve_resume_log_dir(args):
     if args.method == "pbcllm":
         raise ValueError("Resume is currently supported only for mpage/llmpfg.")
 
-    log_dir = _latest_resume_log_dir(args.method) if args.resume_latest else args.resume_log_dir
+    log_dir = _latest_resume_log_dir(args.method, args.problem) if args.resume_latest else args.resume_log_dir
     log_dir = os.path.abspath(log_dir)
     if os.path.isfile(log_dir):
         log_dir = os.path.dirname(log_dir)
@@ -200,7 +218,8 @@ def resolve_resume_log_dir(args):
 def build_method(method_name, llm, llm_cluster, task, args):
     if method_name in ("mpage", "llmpfg"):
         profiler_kwargs = {
-            "log_dir": "logs/LLMPFG",
+            "log_dir": os.path.join("logs", "LLMPFG", args.problem),
+            "evaluation_name": args.problem,
             "log_style": "complex",
         }
         if args.resume_log_dir:
@@ -221,11 +240,11 @@ def build_method(method_name, llm, llm_cluster, task, args):
     if method_name == "pbcllm":
         timestamp = datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%Y%m%d_%H%M%S")
         size_str = str(args.problem_size) if args.problem_size is not None else "default"
-        final_log_dir = f"logs/PBCLLM/{timestamp}_{size_str}"
+        final_log_dir = os.path.join("logs", "PBCLLM", args.problem, f"{timestamp}_{size_str}")
         return PBCLLM(llm=llm,
                       llm_cluster=llm_cluster,
                       profiler=PBCProfiler(
-                           log_dir='logs/PBCLLM',
+                           log_dir=os.path.join("logs", "PBCLLM", args.problem),
                            evaluation_name=args.problem,
                            log_style='complex',
                            final_log_dir=final_log_dir,
@@ -324,6 +343,17 @@ def main():
 
         profiler = getattr(method, "_profiler", None)
         log_dir = getattr(profiler, "_log_dir", None)
+        if method_name in {"mpage", "llmpfg"} and log_dir and pop and pop.population:
+            behavior_report = evaluate_population_behavior_novelty(
+                pop.population,
+                task,
+                method=method_name,
+                problem=args.problem,
+                log_dir=log_dir,
+                eval_seed=args.post_eval_seed,
+            )
+            write_behavior_novelty_report(behavior_report)
+
         if args.evaluate_all_sizes and log_dir:
             print(f"\n{'='*60}")
             print(f"Post-evaluation on all available instance sizes for {method_name}...")
