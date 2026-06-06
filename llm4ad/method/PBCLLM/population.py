@@ -239,6 +239,8 @@ def analyze_mo_result(
         "preference_performance": preference_performance.tolist(),
         "pbt": [pbt.tolist() for pbt in per_instance_pbt],
         "front_count": len(per_instance_final),
+        "evaluation_seeds": result.get("evaluation_seeds"),
+        "instances_per_seed": result.get("instances_per_seed"),
     }
 
 

@@ -13,7 +13,7 @@ from llm4ad.method.LLMPFG import MPaGE, EoHProfiler as MPaGEProfiler
 from llm4ad.method.LLMPFG.resume import resume_eoh
 
 # PBC-LLM method:
-from llm4ad.method.PBCLLM import PBCLLM, PBCProfiler
+from llm4ad.method.PBCLLM import PBCLLM, PBCProfiler, resume_pbcllm
 from llm4ad.task.optimization.registry import PROBLEM_CONFIGS, build_problem
 from llm4ad.tools.evaluate_all_sizes import (
     evaluate_log_all_sizes,
@@ -135,12 +135,12 @@ def parse_args():
     parser.add_argument(
         "--resume-log-dir",
         default=None,
-        help="Resume MPaGE/LLMPFG from an existing log directory, or from its run_log.txt file.",
+        help="Resume MPaGE/LLMPFG/PBCLLM from an existing log directory, or from its run_log.txt file.",
     )
     parser.add_argument(
         "--resume-latest",
         action="store_true",
-        help="Resume MPaGE/LLMPFG from the latest log directory under logs/LLMPFG/<problem>.",
+        help="Resume from the latest log directory for the selected method and problem.",
     )
     parser.add_argument(
         "--evaluate-all-sizes",
@@ -155,6 +155,13 @@ def parse_args():
     )
     parser.add_argument("--post-eval-seed", type=int, default=2025)
     parser.add_argument("--post-eval-timeout-seconds", type=int, default=None)
+    parser.add_argument(
+        "--pbcllm-eval-seeds",
+        type=int,
+        nargs="+",
+        default=[2025],
+        help="Fixed common evaluation seeds used for every PBCLLM heuristic.",
+    )
     return parser.parse_args()
 
 
@@ -170,8 +177,13 @@ def _latest_resume_log_dir(method_name, problem):
             os.path.join("logs", "LLMPFG", problem),
             os.path.join("logs", "LLMPFG"),
         ]
+    elif method_name == "pbcllm":
+        search_roots = [
+            os.path.join("logs", "PBCLLM", problem),
+            os.path.join("logs", "PBCLLM"),
+        ]
     else:
-        raise ValueError("--resume-latest is currently supported only for mpage/llmpfg.")
+        raise ValueError(f"--resume-latest is not supported for method={method_name!r}.")
 
     candidates = []
     seen = set()
@@ -199,8 +211,6 @@ def resolve_resume_log_dir(args):
         return None
     if args.method == "both":
         raise ValueError("Resume can be used with one method at a time, not --method both.")
-    if args.method == "pbcllm":
-        raise ValueError("Resume is currently supported only for mpage/llmpfg.")
 
     log_dir = _latest_resume_log_dir(args.method, args.problem) if args.resume_latest else args.resume_log_dir
     log_dir = os.path.abspath(log_dir)
@@ -240,7 +250,12 @@ def build_method(method_name, llm, llm_cluster, task, args):
     if method_name == "pbcllm":
         timestamp = datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%Y%m%d_%H%M%S")
         size_str = str(args.problem_size) if args.problem_size is not None else "default"
-        final_log_dir = os.path.join("logs", "PBCLLM", args.problem, f"{timestamp}_{size_str}")
+        final_log_dir = args.resume_log_dir or os.path.join(
+            "logs",
+            "PBCLLM",
+            args.problem,
+            f"{timestamp}_{size_str}",
+        )
         return PBCLLM(llm=llm,
                       llm_cluster=llm_cluster,
                       profiler=PBCProfiler(
@@ -255,6 +270,7 @@ def build_method(method_name, llm, llm_cluster, task, args):
                       selection_num=3,
                       num_samplers=1,
                       num_evaluators=1,
+                      evaluation_seeds=args.pbcllm_eval_seeds,
                       behavior_novelty_weight=0.2,
                       cluster_distance=0.35,
                       elites_per_preference=2,
@@ -286,7 +302,10 @@ def main():
         print(f"Using method={method_name}, problem={args.problem}")
         if args.resume_log_dir:
             print(f"Resuming {method_name} from {args.resume_log_dir}")
-            resume_eoh(method)
+            if method_name == "pbcllm":
+                resume_pbcllm(method)
+            else:
+                resume_eoh(method)
         method.run()
 
         # Report training summary from final population

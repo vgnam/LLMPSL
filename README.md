@@ -45,15 +45,30 @@ python main.py
 ```bash
 python main.py --method mpage
 python main.py --method pbcllm
+python main.py --method pbcllm --pbcllm-eval-seeds 2025
 ```
 
-To continue an MPaGE/LLMPFG run from an existing log directory, set the new
-total sample budget higher than the saved sample count:
+PBCLLM evaluates every generated heuristic with the same fixed seed list and
+aggregates all seed-instance Pareto fronts and trajectories before selection.
+The default uses only seed `2025`, so each generated heuristic requires one
+evaluator run.
+
+To continue a run from its original log directory, set the new total sample
+budget higher than the saved sample count:
 
 ```bash
 python main.py --method mpage --resume-log-dir logs/LLMPFG/20260603_005015_Problem_MPaGE --max-sample-nums 400
 python main.py --method mpage --resume-latest --max-sample-nums 400
+python main.py --method pbcllm --resume-log-dir logs/PBCLLM/bi_tsp/<original-run-dir> --max-sample-nums 160
+python main.py --method pbcllm --resume-latest --max-sample-nums 160
 ```
+
+PBCLLM resumes in the original log directory. Older PBCLLM logs that do not
+contain complete Pareto behavior state are re-evaluated as needed and their latest
+population checkpoint is upgraded before search continues. The original
+checkpoint is preserved as `pop_<generation>.pre_resume.json`.
+Use the same problem, dataset seed, problem size, instance count, and PBCLLM
+evaluation seeds as the original run; only increase `--max-sample-nums`.
 
 ## Configuration
 

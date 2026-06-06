@@ -28,13 +28,22 @@ class PBCProfiler(ProfilerBase):
         pbc = getattr(function, "pbc", None)
         if pbc:
             payload["pbc"] = {
+                "objective_num": pbc.get("objective_num"),
+                "fronts": pbc.get("fronts"),
+                "pbt": pbc.get("pbt"),
                 "individual_hv": pbc.get("individual_hv"),
                 "population_hv": pbc.get("population_hv"),
                 "population_hv_contribution": pbc.get("population_hv_contribution"),
+                "selection_population_hv": pbc.get("selection_population_hv"),
+                "selection_hv_gain": pbc.get("selection_hv_gain"),
                 "coverage_loss": pbc.get("coverage_loss"),
                 "preference_performance": pbc.get("preference_performance"),
+                "population_preference_performance": pbc.get("population_preference_performance"),
                 "behavior_diversity": pbc.get("behavior_diversity"),
+                "behavior_novelty": pbc.get("behavior_novelty"),
                 "front_count": pbc.get("front_count"),
+                "evaluation_seeds": pbc.get("evaluation_seeds"),
+                "instances_per_seed": pbc.get("instances_per_seed"),
             }
         return payload
 
@@ -103,8 +112,16 @@ class PBCProfiler(ProfilerBase):
             "best_hv_contribution": None,
             "best_preference_scores": [],
             "mean_behavior_diversity": None,
+            "evaluation_seeds": None,
             "log_dir": self._log_dir,
         }
+        seed_lists = [
+            rec.get("pbc", {}).get("evaluation_seeds")
+            for rec in records
+            if rec.get("pbc", {}).get("evaluation_seeds")
+        ]
+        if seed_lists:
+            summary["evaluation_seeds"] = seed_lists[0]
         population_hvs = [
             rec.get("pbc", {}).get("population_hv")
             for rec in records

@@ -3,6 +3,7 @@ max_sample_nums: 80
 pop_size: 12
 selection_num: 3
 num_evaluators: 1
+evaluation_seeds: [2025]
 behavior_novelty_weight: 0.2
 cluster_distance: 0.35
 elites_per_preference: 2

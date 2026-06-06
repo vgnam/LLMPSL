@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import json
 import random
 import time
 import traceback
+from threading import Lock
+from typing import Sequence
 
 import numpy as np
 
@@ -14,6 +17,102 @@ from ..LLMPFG.prompt import EoHPrompt
 from ..LLMPFG.sampler import EoHSampler
 from ...base import Evaluation, LLM, TextFunctionProgramConverter, SecureEvaluator
 from ...tools.profiler import ProfilerBase
+
+
+DEFAULT_EVALUATION_SEEDS = (2025,)
+_DIRECT_SEEDED_EVALUATION_LOCK = Lock()
+
+
+def _normalize_evaluation_seeds(evaluation_seeds: Sequence[int] | None) -> tuple[int, ...]:
+    seeds = DEFAULT_EVALUATION_SEEDS if evaluation_seeds is None else evaluation_seeds
+    normalized = []
+    for seed in seeds:
+        if isinstance(seed, bool):
+            raise ValueError("PBCLLM evaluation seeds must be integers, not booleans.")
+        try:
+            value = int(seed)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid PBCLLM evaluation seed: {seed!r}") from exc
+        if value not in normalized:
+            normalized.append(value)
+    if not normalized:
+        raise ValueError("PBCLLM requires at least one fixed evaluation seed.")
+    return tuple(normalized)
+
+
+def _evaluate_program_with_seed(
+    evaluator: SecureEvaluator,
+    program,
+    seed: int,
+    isolate_evaluator: bool = True,
+):
+    """Evaluate with an isolated evaluator so concurrent seeds cannot interfere."""
+    seeded_evaluator = copy.deepcopy(evaluator) if isolate_evaluator else evaluator
+    raw_evaluator = getattr(seeded_evaluator, "_evaluator", None)
+    if raw_evaluator is None or not hasattr(raw_evaluator, "eval_seed"):
+        raise ValueError("PBCLLM seeded evaluation requires an evaluator with an eval_seed attribute.")
+    raw_evaluator.eval_seed = int(seed)
+    raw_evaluator.return_mo_trace = True
+    if not getattr(raw_evaluator, "safe_evaluate", True):
+        with _DIRECT_SEEDED_EVALUATION_LOCK:
+            return seeded_evaluator.evaluate_program_record_time(program)
+    return seeded_evaluator.evaluate_program_record_time(program)
+
+
+def _merge_seeded_mo_results(results: Sequence[dict], evaluation_seeds: Sequence[int]) -> dict | None:
+    if not results or len(results) != len(evaluation_seeds):
+        return None
+
+    objective_num = None
+    merged_fronts = []
+    merged_trajectories = []
+    instances_per_seed = []
+    legacy_scores = []
+
+    for result in results:
+        if not isinstance(result, dict):
+            return None
+        current_objective_num = int(result.get("objective_num", 0) or 0)
+        fronts = result.get("fronts")
+        trajectories = result.get("archive_trajectories")
+        if (
+            current_objective_num < 2
+            or not isinstance(fronts, list)
+            or not isinstance(trajectories, list)
+            or len(fronts) != len(trajectories)
+            or not fronts
+        ):
+            return None
+        if objective_num is None:
+            objective_num = current_objective_num
+        elif objective_num != current_objective_num:
+            return None
+        if instances_per_seed and len(fronts) != instances_per_seed[0]:
+            return None
+
+        merged_fronts.extend(fronts)
+        merged_trajectories.extend(trajectories)
+        instances_per_seed.append(len(fronts))
+
+        legacy_score = result.get("legacy_score")
+        if isinstance(legacy_score, (list, tuple)):
+            try:
+                score = np.asarray(legacy_score, dtype=float)
+            except (TypeError, ValueError):
+                score = np.empty(0, dtype=float)
+            if score.ndim == 1 and score.size and np.all(np.isfinite(score)):
+                legacy_scores.append(score)
+
+    merged = {
+        "objective_num": objective_num,
+        "fronts": merged_fronts,
+        "archive_trajectories": merged_trajectories,
+        "evaluation_seeds": [int(seed) for seed in evaluation_seeds],
+        "instances_per_seed": instances_per_seed,
+    }
+    if len(legacy_scores) == len(results) and len({score.shape for score in legacy_scores}) == 1:
+        merged["legacy_score"] = np.mean(np.vstack(legacy_scores), axis=0).tolist()
+    return merged
 
 
 def _evaluator_normalization_bounds(evaluator, objective_num: int) -> tuple[np.ndarray | None, np.ndarray | None]:
@@ -71,6 +170,7 @@ class PBCLLM:
         num_samplers: int = 1,
         num_evaluators: int = 1,
         *,
+        evaluation_seeds: Sequence[int] | None = None,
         behavior_novelty_weight: float = 0.2,
         cluster_distance: float = 0.35,
         elites_per_preference: int = 2,
@@ -87,10 +187,13 @@ class PBCLLM:
             objective_num = len(labels) if labels else None
         if objective_num is None or int(objective_num) < 2:
             raise ValueError("PBCLLM requires objective_num >= 2 and cannot run on single-objective tasks.")
+        if not hasattr(raw_eval, "eval_seed"):
+            raise ValueError("PBCLLM requires an evaluator with an eval_seed attribute.")
 
         setattr(raw_eval, "return_mo_trace", True)
 
         self._objective_num = int(objective_num)
+        self._evaluation_seeds = _normalize_evaluation_seeds(evaluation_seeds)
         self._preference_vectors = default_preference_vectors(self._objective_num)
         self._normalization_ideal, self._normalization_nadir = _evaluator_normalization_bounds(
             raw_eval,
@@ -111,6 +214,7 @@ class PBCLLM:
         self._use_m2_operator = bool(use_m2_operator)
         self._num_samplers = int(num_samplers)
         self._num_evaluators = int(num_evaluators)
+        self._isolate_seed_evaluator = multi_thread_or_process_eval == "thread"
         self._debug_mode = debug_mode
         self._llm_review = bool(llm_review)
         self._tot_sample_nums = 0
@@ -146,6 +250,31 @@ class PBCLLM:
     def _continue_loop(self):
         return self._max_sample_nums is None or self._tot_sample_nums < self._max_sample_nums
 
+    def _evaluate_program_across_seeds(self, program):
+        futures = [
+            self._evaluation_executor.submit(
+                _evaluate_program_with_seed,
+                self._evaluator,
+                program,
+                seed,
+                getattr(self, "_isolate_seed_evaluator", True),
+            )
+            for seed in self._evaluation_seeds
+        ]
+        results = []
+        total_eval_time = 0.0
+        all_valid = True
+        for future in futures:
+            result, eval_time = future.result()
+            if not isinstance(result, dict):
+                all_valid = False
+            else:
+                results.append(result)
+            total_eval_time += float(eval_time or 0.0)
+        if not all_valid:
+            return None, total_eval_time
+        return _merge_seeded_mo_results(results, self._evaluation_seeds), total_eval_time
+
     def _sample_evaluate_register(self, prompt: str):
         sample_start = time.time()
         thought, func = self._sampler.get_thought_and_function(prompt)
@@ -158,10 +287,7 @@ class PBCLLM:
             return
 
         try:
-            result, eval_time = self._evaluation_executor.submit(
-                self._evaluator.evaluate_program_record_time,
-                program,
-            ).result()
+            result, eval_time = self._evaluate_program_across_seeds(program)
         except Exception:
             if self._debug_mode:
                 traceback.print_exc()
@@ -176,6 +302,9 @@ class PBCLLM:
             hv_ref_point=self._hv_ref_point,
         )
         if pbc is None:
+            return
+        expected_front_count = sum(result.get("instances_per_seed", []))
+        if pbc.get("front_count") != expected_front_count:
             return
 
         func.score = [-pbc["individual_hv"], pbc["coverage_loss"]]
