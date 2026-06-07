@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import shutil
 
 from ...base import TextFunctionProgramConverter as tfpc
 from .population import analyze_mo_result
@@ -170,18 +169,6 @@ def _restore_function(record: dict, pbcllm, source: str, pbc_cache: dict[str, di
     return func, rebuilt
 
 
-def _write_population_checkpoint(path: str, pop, profiler: PBCProfiler) -> None:
-    records = [profiler._record_payload(func) for func in pop.population]
-    backup_path = f"{path[:-5]}.pre_resume.json"
-    if os.path.isfile(path) and not os.path.exists(backup_path):
-        shutil.copy2(path, backup_path)
-        print(f"RESUME PBCLLM: Saved original checkpoint backup {backup_path}.", flush=True)
-    temp_path = f"{path}.resume.tmp"
-    with open(temp_path, "w", encoding="utf-8") as file:
-        json.dump(records, file, indent=2)
-    os.replace(temp_path, path)
-
-
 def _resume_population(log_path: str, pbcllm, pbc_cache: dict[str, dict]) -> tuple[int, int, int]:
     latest = _get_latest_pop_json(log_path)
     pop = pbcllm._population
@@ -210,9 +197,6 @@ def _resume_population(log_path: str, pbcllm, pbc_cache: dict[str, dict]) -> tup
         rebuilt_count += int(rebuilt)
     pop._refresh_population_metrics()
 
-    if rebuilt_count:
-        _write_population_checkpoint(path, pop, pbcllm._profiler)
-        print(f"RESUME PBCLLM: Upgraded existing checkpoint {path}.", flush=True)
     print(f"RESUME PBCLLM: Restored generation={max_gen}.", flush=True)
     return max_gen, max_gen * pop._pop_size, rebuilt_count
 
@@ -269,6 +253,10 @@ def resume_pbcllm(pbcllm):
     )
     pbcllm._profiler.__class__._num_samples = max_sample_order
     pbcllm._profiler._cur_gen = pbcllm._population.generation
+    pbcllm._profiler._latest_pbc_records = [
+        copy.deepcopy(getattr(func, "pbc", None) or {})
+        for func in pbcllm._population.population
+    ]
     pbcllm._tot_sample_nums = max_sample_order
 
     print(

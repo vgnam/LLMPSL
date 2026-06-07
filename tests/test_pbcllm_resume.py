@@ -94,17 +94,11 @@ class PBCLLMResumeTests(unittest.TestCase):
             self.assertEqual(method._population.generation, 1)
             self.assertEqual(len(method._population._next_gen_pop), 1)
             self.assertEqual(method.evaluation_count, 3)
-            self.assertTrue(
-                os.path.isfile(os.path.join(log_dir, "population", "pop_1.pre_resume.json"))
-            )
-
             with open(population_path, "r", encoding="utf-8") as file:
                 upgraded = json.load(file)
-            self.assertIn("fronts", upgraded[0]["pbc"])
-            self.assertIn("pbt", upgraded[0]["pbc"])
-            self.assertEqual(upgraded[0]["pbc"]["evaluation_seeds"], [2025])
+            self.assertIn("individual_hv", upgraded[0]["pbc"])
 
-    def test_new_full_checkpoint_resumes_without_re_evaluation(self):
+    def test_compact_checkpoint_resumes_by_re_evaluating_pbc_state(self):
         with tempfile.TemporaryDirectory() as log_dir:
             os.makedirs(os.path.join(log_dir, "population"))
             os.makedirs(os.path.join(log_dir, "samples"))
@@ -139,8 +133,42 @@ class PBCLLMResumeTests(unittest.TestCase):
 
             resume_pbcllm(method)
 
-            self.assertEqual(method.evaluation_count, 0)
+            self.assertEqual(method.evaluation_count, 2)
             self.assertEqual(method._tot_sample_nums, 2)
+
+    def test_legacy_full_checkpoint_resumes_without_re_evaluation(self):
+        with tempfile.TemporaryDirectory() as log_dir:
+            os.makedirs(os.path.join(log_dir, "population"))
+            os.makedirs(os.path.join(log_dir, "samples"))
+            method = self._method(log_dir)
+            records = []
+            for index in range(1, 3):
+                record = _old_record(index)
+                record["pbc"].update(
+                    {
+                        "objective_num": 2,
+                        "fronts": [[[1.0, 2.0]]],
+                        "pbt": [[[0.5, 0.5, 1.0]]],
+                        "evaluation_seeds": [2025],
+                        "instances_per_seed": [1],
+                    }
+                )
+                records.append(record)
+            with open(os.path.join(log_dir, "population", "pop_1.json"), "w", encoding="utf-8") as file:
+                json.dump(records, file)
+            with open(os.path.join(log_dir, "samples", "samples_0~200.json"), "w", encoding="utf-8") as file:
+                json.dump(
+                    [
+                        {"sample_order": index, **record}
+                        for index, record in enumerate(records, start=1)
+                    ],
+                    file,
+                )
+
+            resume_pbcllm(method)
+
+            self.assertEqual(method.evaluation_count, 0)
+            self.assertEqual(len(method._profiler._latest_pbc_records), 2)
 
     def test_resume_initial_log_before_first_population_checkpoint(self):
         with tempfile.TemporaryDirectory() as log_dir:

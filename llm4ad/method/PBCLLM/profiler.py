@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 from threading import Lock
-from typing import Any
 
 from ...base import Function
 from ...tools.profiler import ProfilerBase
@@ -15,37 +15,17 @@ class PBCProfiler(ProfilerBase):
         super().__init__(*args, **kwargs)
         self._pop_lock = Lock()
         self._cur_gen = 0
+        self._latest_pbc_records: list[dict] = []
         if self._log_dir:
             self._ckpt_dir = os.path.join(self._log_dir, "population")
             os.makedirs(self._ckpt_dir, exist_ok=True)
 
-    def _record_payload(self, function: Function) -> dict[str, Any]:
-        payload = {
+    def _record_payload(self, function: Function) -> dict:
+        return {
             "algorithm": getattr(function, "algorithm", None),
             "function": str(function),
             "score": function.score,
         }
-        pbc = getattr(function, "pbc", None)
-        if pbc:
-            payload["pbc"] = {
-                "objective_num": pbc.get("objective_num"),
-                "fronts": pbc.get("fronts"),
-                "pbt": pbc.get("pbt"),
-                "individual_hv": pbc.get("individual_hv"),
-                "population_hv": pbc.get("population_hv"),
-                "population_hv_contribution": pbc.get("population_hv_contribution"),
-                "selection_population_hv": pbc.get("selection_population_hv"),
-                "selection_hv_gain": pbc.get("selection_hv_gain"),
-                "coverage_loss": pbc.get("coverage_loss"),
-                "preference_performance": pbc.get("preference_performance"),
-                "population_preference_performance": pbc.get("population_preference_performance"),
-                "behavior_diversity": pbc.get("behavior_diversity"),
-                "behavior_novelty": pbc.get("behavior_novelty"),
-                "front_count": pbc.get("front_count"),
-                "evaluation_seeds": pbc.get("evaluation_seeds"),
-                "instances_per_seed": pbc.get("instances_per_seed"),
-            }
-        return payload
 
     def _write_json(self, function: Function, *, record_type="history", record_sep=200):
         if not self._log_dir:
@@ -73,6 +53,10 @@ class PBCProfiler(ProfilerBase):
         with self._pop_lock:
             if pop.generation == 0 or pop.generation == self._cur_gen:
                 return
+            self._latest_pbc_records = [
+                copy.deepcopy(getattr(func, "pbc", None) or {})
+                for func in pop.population
+            ]
             funcs_json = [self._record_payload(func) for func in pop.population]
             path = os.path.join(self._ckpt_dir, f"pop_{pop.generation}.json")
             with open(path, "w", encoding="utf-8") as file:
@@ -82,28 +66,12 @@ class PBCProfiler(ProfilerBase):
     def finish(self):
         if not self._log_dir:
             return
-        pop_dir = os.path.join(self._log_dir, "population")
-        latest = None
-        if os.path.isdir(pop_dir):
-            for name in os.listdir(pop_dir):
-                if not name.startswith("pop_") or not name.endswith(".json"):
-                    continue
-                try:
-                    order = int(name[4:-5])
-                except ValueError:
-                    continue
-                if latest is None or order > latest[0]:
-                    latest = (order, os.path.join(pop_dir, name))
-        records = []
-        if latest is not None:
-            with open(latest[1], "r", encoding="utf-8") as file:
-                records = json.load(file)
-
+        records = self._latest_pbc_records
         preference_scores = [
-            rec.get("pbc", {}).get("preference_performance")
-            for rec in records
+            pbc.get("preference_performance")
+            for pbc in records
+            if isinstance(pbc.get("preference_performance"), list)
         ]
-        preference_scores = [scores for scores in preference_scores if isinstance(scores, list)]
         summary = {
             "num_records": len(records),
             "method": "PBCLLM",
@@ -115,44 +83,35 @@ class PBCProfiler(ProfilerBase):
             "evaluation_seeds": None,
             "log_dir": self._log_dir,
         }
-        seed_lists = [
-            rec.get("pbc", {}).get("evaluation_seeds")
-            for rec in records
-            if rec.get("pbc", {}).get("evaluation_seeds")
+
+        seed_lists = [pbc.get("evaluation_seeds") for pbc in records if pbc.get("evaluation_seeds")]
+        population_hvs = [pbc.get("population_hv") for pbc in records if pbc.get("population_hv") is not None]
+        individual_hvs = [pbc.get("individual_hv") for pbc in records if pbc.get("individual_hv") is not None]
+        contributions = [
+            pbc.get("population_hv_contribution")
+            for pbc in records
+            if pbc.get("population_hv_contribution") is not None
+        ]
+        diversity = [
+            pbc.get("behavior_diversity")
+            for pbc in records
+            if pbc.get("behavior_diversity") is not None
         ]
         if seed_lists:
             summary["evaluation_seeds"] = seed_lists[0]
-        population_hvs = [
-            rec.get("pbc", {}).get("population_hv")
-            for rec in records
-            if rec.get("pbc", {}).get("population_hv") is not None
-        ]
         if population_hvs:
-            summary["population_hv"] = max(float(v) for v in population_hvs)
-        individual_hvs = [
-            rec.get("pbc", {}).get("individual_hv")
-            for rec in records
-            if rec.get("pbc", {}).get("individual_hv") is not None
-        ]
+            summary["population_hv"] = max(float(value) for value in population_hvs)
         if individual_hvs:
-            summary["best_individual_hv"] = max(float(v) for v in individual_hvs)
-        contributions = [
-            rec.get("pbc", {}).get("population_hv_contribution")
-            for rec in records
-            if rec.get("pbc", {}).get("population_hv_contribution") is not None
-        ]
+            summary["best_individual_hv"] = max(float(value) for value in individual_hvs)
         if contributions:
-            summary["best_hv_contribution"] = max(float(v) for v in contributions)
+            summary["best_hv_contribution"] = max(float(value) for value in contributions)
         if preference_scores:
-            cols = list(zip(*preference_scores))
-            summary["best_preference_scores"] = [min(float(v) for v in col) for col in cols]
-        diversity = [
-            rec.get("pbc", {}).get("behavior_diversity")
-            for rec in records
-            if rec.get("pbc", {}).get("behavior_diversity") is not None
-        ]
+            summary["best_preference_scores"] = [
+                min(float(value) for value in column)
+                for column in zip(*preference_scores)
+            ]
         if diversity:
-            summary["mean_behavior_diversity"] = sum(float(v) for v in diversity) / len(diversity)
+            summary["mean_behavior_diversity"] = sum(float(value) for value in diversity) / len(diversity)
 
         with open(os.path.join(self._log_dir, "pbc_report.json"), "w", encoding="utf-8") as file:
             json.dump(summary, file, indent=2)

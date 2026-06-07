@@ -63,10 +63,11 @@ python main.py --method pbcllm --resume-log-dir logs/PBCLLM/bi_tsp/<original-run
 python main.py --method pbcllm --resume-latest --max-sample-nums 160
 ```
 
-PBCLLM resumes in the original log directory. Older PBCLLM logs that do not
-contain complete Pareto behavior state are re-evaluated as needed and their latest
-population checkpoint is upgraded before search continues. The original
-checkpoint is preserved as `pop_<generation>.pre_resume.json`.
+PBCLLM resumes in the original log directory. Its JSON logs use the same compact
+`algorithm`/`function`/`score` payload as LLMPFG, so PBCLLM re-evaluates saved
+heuristics on resume to rebuild Pareto fronts and behavior trajectories in memory.
+Older logs that contain complete Pareto behavior state remain supported and can
+resume without re-evaluating those records.
 Use the same problem, dataset seed, problem size, instance count, and PBCLLM
 evaluation seeds as the original run; only increase `--max-sample-nums`.
 

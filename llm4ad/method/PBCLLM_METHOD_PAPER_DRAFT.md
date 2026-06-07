@@ -361,7 +361,7 @@ end function
 
 - **Final population** \(\mathcal{P}\): the set of \(N\) selected heuristic programs
 - **PBC report**: population hypervolume, coverage loss, average behavior diversity, and per-heuristic metrics
-- **Population checkpoints**: full population state and PBTs at each update epoch
+- **Population checkpoints**: compact heuristic records containing algorithm descriptions, function code, and selection scores; PBTs remain in memory during search and are rebuilt by evaluation when resuming
 
 ## Summary
 
