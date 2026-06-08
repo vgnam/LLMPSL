@@ -162,6 +162,16 @@ def parse_args():
         default=[2025],
         help="Fixed common evaluation seeds used for every PBCLLM heuristic.",
     )
+    parser.add_argument(
+        "--pbcllm-parent-selection",
+        choices=("complementary_behavior", "legacy_role"),
+        default="complementary_behavior",
+        help=(
+            "PBCLLM parent selection policy. complementary_behavior selects parents by weak-region anchor, "
+            "marginal population-HV complement, and behavior-trajectory complement; legacy_role uses the old "
+            "best-HV/contribution/diversity roles."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -274,6 +284,7 @@ def build_method(method_name, llm, llm_cluster, task, args):
                       behavior_novelty_weight=0.2,
                       cluster_distance=0.35,
                       elites_per_preference=2,
+                      parent_selection_strategy=args.pbcllm_parent_selection,
                     )
 
     raise ValueError(f"Unknown method={method_name!r}")

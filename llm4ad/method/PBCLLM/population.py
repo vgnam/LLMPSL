@@ -12,6 +12,12 @@ from ...base import Function
 from ...task.optimization.hv_utils import scale_hypervolume
 
 EPS = 1e-12
+PARENT_SELECTION_COMPLEMENTARY_BEHAVIOR = "complementary_behavior"
+PARENT_SELECTION_LEGACY_ROLE = "legacy_role"
+PARENT_SELECTION_STRATEGIES = (
+    PARENT_SELECTION_COMPLEMENTARY_BEHAVIOR,
+    PARENT_SELECTION_LEGACY_ROLE,
+)
 
 
 def default_preference_vectors(objective_num: int) -> np.ndarray:
@@ -354,7 +360,11 @@ class Population:
         behavior_novelty_weight: float = 0.2,
         cluster_distance: float = 0.35,
         elites_per_preference: int = 2,
+        parent_selection_strategy: str = PARENT_SELECTION_COMPLEMENTARY_BEHAVIOR,
     ):
+        if parent_selection_strategy not in PARENT_SELECTION_STRATEGIES:
+            choices = ", ".join(PARENT_SELECTION_STRATEGIES)
+            raise ValueError(f"Unknown PBCLLM parent_selection_strategy={parent_selection_strategy!r}; choose one of: {choices}.")
         self._population: list[Function] = []
         self._pop_size = int(pop_size)
         self._preference_vectors = np.asarray(preference_vectors, dtype=float)
@@ -365,6 +375,7 @@ class Population:
         self._behavior_novelty_weight = float(behavior_novelty_weight)
         self._cluster_distance = float(cluster_distance)
         self._elites_per_preference = int(elites_per_preference)
+        self._parent_selection_strategy = parent_selection_strategy
         self._population_hv = 0.0
         self._generation = 0
         self._next_gen_pop: list[Function] = []
@@ -566,7 +577,179 @@ class Population:
             best_scores.append(best)
         return int(np.argmax(best_scores))
 
-    def select_parents(self, target_preference: int, selection_num: int = 3) -> list[Function]:
+    @staticmethod
+    def _contains_identity(items: Sequence[Function], target: Function) -> bool:
+        return any(item is target for item in items)
+
+    @staticmethod
+    def _remaining_by_identity(items: Sequence[Function], selected: Sequence[Function]) -> list[Function]:
+        selected_ids = {id(func) for func in selected}
+        return [func for func in items if id(func) not in selected_ids]
+
+    def _preference_score(self, func: Function, preference_idx: int) -> float:
+        sp = self._sp(func)
+        if preference_idx < 0 or preference_idx >= sp.size:
+            return float("inf")
+        value = float(sp[preference_idx])
+        return value if math.isfinite(value) else float("inf")
+
+    def _set_parent_selection_role(
+        self,
+        func: Function,
+        *,
+        role: str,
+        target_preference: int,
+        selected: Sequence[Function],
+        hv_delta: float | None = None,
+    ) -> None:
+        pbc = getattr(func, "pbc", None) or {}
+        pbc["parent_selection_strategy"] = self._parent_selection_strategy
+        pbc["parent_selection_role"] = role
+        pbc["parent_selection_target_preference"] = int(target_preference)
+        pbc["parent_selection_target_score"] = self._preference_score(func, target_preference)
+        if hv_delta is not None:
+            pbc["parent_selection_hv_delta"] = float(hv_delta)
+        if selected:
+            distances = [
+                behavior_distance(func, parent)
+                for parent in selected
+                if getattr(parent, "pbc", None)
+            ]
+            finite_distances = [
+                float(distance)
+                for distance in distances
+                if math.isfinite(float(distance)) and float(distance) < 1e5
+            ]
+            if finite_distances:
+                pbc["parent_selection_min_behavior_distance"] = min(finite_distances)
+        func.pbc = pbc
+
+    def _select_weak_preference_anchor(self, target_preference: int) -> Function:
+        valid = [
+            func for func in self._population
+            if math.isfinite(self._preference_score(func, target_preference))
+        ]
+        if not valid:
+            return max(self._population, key=self._individual_hv)
+        return min(
+            valid,
+            key=lambda func: (
+                self._preference_score(func, target_preference),
+                self._coverage_loss(func),
+                -self._hv_contribution(func),
+                -self._individual_hv(func),
+                -self._behavior_diversity(func),
+            ),
+        )
+
+    def _set_hv_delta(self, selected: Sequence[Function], candidate: Function) -> float:
+        base_hv = population_front_hv(selected, self._hv_ref_point)
+        next_hv = population_front_hv([*selected, candidate], self._hv_ref_point)
+        return max(0.0, next_hv - base_hv)
+
+    def _select_hv_complement(self, selected: Sequence[Function]) -> tuple[Function | None, float]:
+        candidates = self._remaining_by_identity(self._population, selected)
+        if not candidates:
+            return None, 0.0
+        scored = [(func, self._set_hv_delta(selected, func)) for func in candidates]
+        func, hv_delta = max(
+            scored,
+            key=lambda item: (
+                item[1],
+                self._hv_contribution(item[0]),
+                self._individual_hv(item[0]),
+                self._behavior_diversity(item[0]),
+                -self._coverage_loss(item[0]),
+            ),
+        )
+        return func, hv_delta
+
+    def _behavior_complement_score(self, func: Function, selected: Sequence[Function]) -> float:
+        if not selected:
+            return self._behavior_diversity(func)
+        distances = []
+        for parent in selected:
+            distance = behavior_distance(func, parent)
+            if math.isfinite(distance) and distance < 1e5:
+                distances.append(float(distance))
+        if not distances:
+            return self._behavior_diversity(func)
+        return min(distances)
+
+    def _quality_gate_for_behavior_parent(self, candidates: Sequence[Function]) -> list[Function]:
+        if not candidates:
+            return []
+        individual_hvs = [self._individual_hv(func) for func in self._population]
+        median_individual_hv = float(np.median(individual_hvs)) if individual_hvs else 0.0
+        eligible = [
+            func for func in candidates
+            if self._hv_contribution(func) > EPS or self._individual_hv(func) >= median_individual_hv
+        ]
+        return eligible or list(candidates)
+
+    def _select_behavior_complement(self, selected: Sequence[Function]) -> Function | None:
+        candidates = self._remaining_by_identity(self._population, selected)
+        candidates = self._quality_gate_for_behavior_parent(candidates)
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda func: (
+                self._behavior_complement_score(func, selected),
+                self._hv_contribution(func),
+                self._individual_hv(func),
+                -self._coverage_loss(func),
+            ),
+        )
+
+    @staticmethod
+    def _normalize_score_map(raw_scores: dict[int, float]) -> dict[int, float]:
+        finite_values = [value for value in raw_scores.values() if math.isfinite(value)]
+        if not finite_values:
+            return {key: 0.0 for key in raw_scores}
+        min_value = min(finite_values)
+        max_value = max(finite_values)
+        if max_value - min_value <= EPS:
+            return {key: 0.0 for key in raw_scores}
+        return {
+            key: (value - min_value) / (max_value - min_value)
+            if math.isfinite(value) else 0.0
+            for key, value in raw_scores.items()
+        }
+
+    def _select_greedy_complement(self, selected: Sequence[Function], target_preference: int) -> tuple[Function | None, float]:
+        candidates = self._remaining_by_identity(self._population, selected)
+        if not candidates:
+            return None, 0.0
+
+        hv_delta = {id(func): self._set_hv_delta(selected, func) for func in candidates}
+        behavior_gain = {id(func): self._behavior_complement_score(func, selected) for func in candidates}
+        target_quality = {
+            id(func): -self._preference_score(func, target_preference)
+            for func in candidates
+        }
+        hv_norm = self._normalize_score_map(hv_delta)
+        behavior_norm = self._normalize_score_map(behavior_gain)
+        target_norm = self._normalize_score_map(target_quality)
+        behavior_weight = min(1.0, max(0.0, self._behavior_novelty_weight))
+        hv_weight = 1.0 - behavior_weight
+        target_weight = 0.15
+
+        selected_func = max(
+            candidates,
+            key=lambda func: (
+                hv_weight * hv_norm[id(func)]
+                + behavior_weight * behavior_norm[id(func)]
+                + target_weight * target_norm[id(func)],
+                hv_delta[id(func)],
+                behavior_gain[id(func)],
+                self._individual_hv(func),
+                -self._coverage_loss(func),
+            ),
+        )
+        return selected_func, hv_delta[id(selected_func)]
+
+    def _select_parents_legacy_role(self, target_preference: int, selection_num: int) -> list[Function]:
         if not self._population:
             return []
         parents: list[Function] = []
@@ -585,14 +768,74 @@ class Population:
             p3 = max(useful, key=self._behavior_diversity)
         else:
             p3 = min(self._population, key=lambda f: float(self._sp(f)[target_preference]))
-        if p3 not in parents:
+        if not self._contains_identity(parents, p3):
             parents.append(p3)
 
         while len(parents) < min(selection_num, len(self._population)):
             candidate = random.choice(self._population)
-            if candidate not in parents:
+            if not self._contains_identity(parents, candidate):
                 parents.append(candidate)
         return parents[:selection_num]
+
+    def _select_parents_complementary_behavior(self, target_preference: int, selection_num: int) -> list[Function]:
+        if not self._population or selection_num <= 0:
+            return []
+
+        target_preference = int(target_preference)
+        selected: list[Function] = []
+
+        p1 = self._select_weak_preference_anchor(target_preference)
+        selected.append(p1)
+        self._set_parent_selection_role(
+            p1,
+            role="weak_preference_anchor",
+            target_preference=target_preference,
+            selected=[],
+        )
+
+        if len(selected) < min(selection_num, len(self._population)):
+            p2, hv_delta = self._select_hv_complement(selected)
+            if p2 is not None:
+                self._set_parent_selection_role(
+                    p2,
+                    role="hv_complement",
+                    target_preference=target_preference,
+                    selected=selected,
+                    hv_delta=hv_delta,
+                )
+                selected.append(p2)
+
+        if len(selected) < min(selection_num, len(self._population)):
+            p3 = self._select_behavior_complement(selected)
+            if p3 is not None:
+                self._set_parent_selection_role(
+                    p3,
+                    role="behavior_complement",
+                    target_preference=target_preference,
+                    selected=selected,
+                    hv_delta=self._set_hv_delta(selected, p3),
+                )
+                selected.append(p3)
+
+        while len(selected) < min(selection_num, len(self._population)):
+            candidate, hv_delta = self._select_greedy_complement(selected, target_preference)
+            if candidate is None:
+                break
+            self._set_parent_selection_role(
+                candidate,
+                role="greedy_complement",
+                target_preference=target_preference,
+                selected=selected,
+                hv_delta=hv_delta,
+            )
+            selected.append(candidate)
+
+        return selected[:selection_num]
+
+    def select_parents(self, target_preference: int, selection_num: int = 3) -> list[Function]:
+        if self._parent_selection_strategy == PARENT_SELECTION_LEGACY_ROLE:
+            return self._select_parents_legacy_role(target_preference, selection_num)
+        return self._select_parents_complementary_behavior(target_preference, selection_num)
 
     def behavior_summary(self, func: Function) -> str:
         pbc = getattr(func, "pbc", None) or {}

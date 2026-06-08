@@ -46,12 +46,24 @@ python main.py
 python main.py --method mpage
 python main.py --method pbcllm
 python main.py --method pbcllm --pbcllm-eval-seeds 2025
+python main.py --method pbcllm --pbcllm-parent-selection complementary_behavior
 ```
 
 PBCLLM evaluates every generated heuristic with the same fixed seed list and
 aggregates all seed-instance Pareto fronts and trajectories before selection.
 The default uses only seed `2025`, so each generated heuristic requires one
 evaluator run.
+
+PBCLLM parent selection defaults to `complementary_behavior`. For each crossover
+prompt, it chooses: (1) a weak-preference anchor, (2) the heuristic with the
+largest marginal population-front HV gain when combined with the selected set,
+and (3) a behavior-trajectory complement using PBT/DTW under a quality gate.
+The selected parent roles are inserted into the PBCLLM prompt. To run the old
+role policy for ablation:
+
+```bash
+python main.py --method pbcllm --pbcllm-parent-selection legacy_role
+```
 
 To continue a run from its original log directory, set the new total sample
 budget higher than the saved sample count:

@@ -12,8 +12,8 @@ from typing import Sequence
 import numpy as np
 
 from .population import Population, analyze_mo_result, default_preference_vectors
+from .prompt import PBCPrompt as EoHPrompt
 from .profiler import PBCProfiler
-from ..LLMPFG.prompt import EoHPrompt
 from ..LLMPFG.sampler import EoHSampler
 from ...base import Evaluation, LLM, TextFunctionProgramConverter, SecureEvaluator
 from ...tools.profiler import ProfilerBase
@@ -174,6 +174,7 @@ class PBCLLM:
         behavior_novelty_weight: float = 0.2,
         cluster_distance: float = 0.35,
         elites_per_preference: int = 2,
+        parent_selection_strategy: str = "complementary_behavior",
         rho: float = 0.05,
         debug_mode: bool = False,
         llm_review: bool = False,
@@ -212,6 +213,7 @@ class PBCLLM:
         self._use_e2_operator = bool(use_e2_operator)
         self._use_m1_operator = bool(use_m1_operator)
         self._use_m2_operator = bool(use_m2_operator)
+        self._parent_selection_strategy = str(parent_selection_strategy)
         self._num_samplers = int(num_samplers)
         self._num_evaluators = int(num_evaluators)
         self._isolate_seed_evaluator = multi_thread_or_process_eval == "thread"
@@ -234,6 +236,7 @@ class PBCLLM:
             behavior_novelty_weight=behavior_novelty_weight,
             cluster_distance=cluster_distance,
             elites_per_preference=elites_per_preference,
+            parent_selection_strategy=self._parent_selection_strategy,
         )
 
         if profiler is not None:
