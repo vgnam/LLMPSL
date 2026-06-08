@@ -265,7 +265,7 @@ def build_method(method_name, llm, llm_cluster, task, args):
                            final_log_dir=final_log_dir,
                       ),
                       evaluation=task,
-                      max_sample_nums=args.max_sample_nums if args.max_sample_nums is not None else 80,
+                      max_sample_nums=args.max_sample_nums if args.max_sample_nums is not None else 200,
                       pop_size=10,
                       selection_num=3,
                       num_samplers=1,

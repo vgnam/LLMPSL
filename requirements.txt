@@ -14,3 +14,7 @@ matplotlib
 ttkbootstrap
 google-genai 
 pymoo
+autopep8
+tree-sitter
+tree-sitter-python
+transformers
