@@ -14,6 +14,14 @@ from ...base import Function
 
 class ProfilerBase:
     _num_samples = 0
+    _sensitive_parameter_names = (
+        'api_key',
+        'apikey',
+        'credential',
+        'password',
+        'secret',
+        'token',
+    )
 
     process_start_time = datetime.now(pytz.timezone("Asia/Bangkok"))
     result_folder = process_start_time.strftime("%Y%m%d_%H%M%S")
@@ -55,14 +63,14 @@ class ProfilerBase:
         self._parameters = [llm, prob, method]
         self._create_log_path()
 
-    def register_function(self, function: Function, *, resume_mode=False):
+    def register_function(self, function: Function, program='', *, resume_mode=False):
         """Record an obtained function. This is a synchronized function.
         """
         try:
             self._register_function_lock.acquire()
             self.__class__._num_samples += 1
             self._record_and_verbose(function, resume_mode=resume_mode)
-            self._write_json(function)
+            self._write_json(function, program=program)
         finally:
             self._register_function_lock.release()
 
@@ -75,7 +83,7 @@ class ProfilerBase:
     def resume(self, *args, **kwargs):
         pass
 
-    def _write_json(self, function: Function, *, record_type='history', record_sep=200):
+    def _write_json(self, function: Function, program='', *, record_type='history', record_sep=200):
         """
             Write function data to a JSON file.
 
@@ -93,7 +101,8 @@ class ProfilerBase:
         content = {
             'sample_order': sample_order,
             'function': str(function),
-            'score': function.score
+            'score': function.score,
+            'program': program,
         }
 
         if record_type == 'history':
@@ -174,6 +183,21 @@ class ProfilerBase:
             return text
         return text[:limit - 3] + '...'
 
+    @classmethod
+    def _safe_parameter_value(cls, attr, value):
+        attr_lower = str(attr).lower()
+        if any(name in attr_lower for name in cls._sensitive_parameter_names):
+            return '<redacted>'
+        if isinstance(value, dict):
+            return {
+                key: cls._safe_parameter_value(key, item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            sanitized = [cls._safe_parameter_value(attr, item) for item in value]
+            return tuple(sanitized) if isinstance(value, tuple) else sanitized
+        return value
+
     def _create_log_path(self):
         self._samples_json_dir = os.path.join(self._log_dir, 'samples')
         os.makedirs(self._log_dir, exist_ok=True)
@@ -204,20 +228,20 @@ class ProfilerBase:
         self._logger_txt.info(f"LLM: {llm.__class__.__name__}")
         for attr, value in llm.__dict__.items():
             if attr not in ['_functions']:
-                self._logger_txt.info(f"{attr}: {value}")
+                self._logger_txt.info(f"{attr}: {self._safe_parameter_value(attr, value)}")
 
         self._logger_txt.info("==================================Problem Parameters===============================")
 
         self._logger_txt.info(f"Problem: {prob.__class__.__name__}")
         for attr, value in prob.__dict__.items():
             if attr not in ['template_program', '_datasets']:
-                self._logger_txt.info(f"{attr}: {value}")
+                self._logger_txt.info(f"{attr}: {self._safe_parameter_value(attr, value)}")
 
         self._logger_txt.info("==================================Method Parameters===============================")
 
         self._logger_txt.info(f"Method: {method.__class__.__name__}")
         for attr, value in method.__dict__.items():
             if attr not in ['llm', '_evaluator', '_profiler', '_template_program_str', '_template_program', '_function_to_evolve', '_population', '_sampler', '_task_description_str']:
-                self._logger_txt.info(f"{attr}: {value}")
+                self._logger_txt.info(f"{attr}: {self._safe_parameter_value(attr, value)}")
 
         self._logger_txt.info("==================================End of Parameters===============================")

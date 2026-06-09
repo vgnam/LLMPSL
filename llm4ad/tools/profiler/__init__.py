@@ -1,5 +1,16 @@
 from .profile import ProfilerBase
 
+
+class TensorboardProfiler(ProfilerBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._writer = None
+
+
+class WandBProfiler(ProfilerBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
 import os
 import inspect
 import importlib

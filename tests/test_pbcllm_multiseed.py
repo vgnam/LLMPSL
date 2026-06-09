@@ -106,6 +106,31 @@ class PBCLLMMultiSeedTests(unittest.TestCase):
         self.assertEqual(merged["legacy_score"], [-12.0, 12.0])
         self.assertEqual(eval_time, 4.0)
 
+    def test_evolve_stops_after_consecutive_sampling_errors(self):
+        method = PBCLLM.__new__(PBCLLM)
+        method._max_sample_nums = 10
+        method._tot_sample_nums = 0
+        method._use_e1_operator = False
+        method._use_e2_operator = False
+        method._use_m1_operator = True
+        method._use_m2_operator = False
+        method._make_m_prompt = lambda operator: "prompt"
+        method._debug_mode = False
+        method._max_consecutive_sampling_errors = 3
+        method._sampling_error_backoff_seconds = 0.0
+        attempts = []
+
+        def fail_sampling(prompt):
+            attempts.append(prompt)
+            raise ConnectionError("API unavailable")
+
+        method._sample_evaluate_register = fail_sampling
+
+        with self.assertRaisesRegex(RuntimeError, "infinite retry loop"):
+            method._evolve()
+
+        self.assertEqual(len(attempts), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

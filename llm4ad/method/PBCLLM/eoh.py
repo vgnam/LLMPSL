@@ -179,6 +179,8 @@ class PBCLLM:
         debug_mode: bool = False,
         llm_review: bool = False,
         multi_thread_or_process_eval: str = "process",
+        max_consecutive_sampling_errors: int = 5,
+        sampling_error_backoff_seconds: float = 1.0,
         **kwargs,
     ):
         raw_eval = getattr(evaluation, "_evaluator", evaluation)
@@ -220,6 +222,12 @@ class PBCLLM:
         self._debug_mode = debug_mode
         self._llm_review = bool(llm_review)
         self._tot_sample_nums = 0
+        self._max_consecutive_sampling_errors = int(max_consecutive_sampling_errors)
+        self._sampling_error_backoff_seconds = float(sampling_error_backoff_seconds)
+        if self._max_consecutive_sampling_errors < 1:
+            raise ValueError("max_consecutive_sampling_errors must be at least 1.")
+        if self._sampling_error_backoff_seconds < 0:
+            raise ValueError("sampling_error_backoff_seconds cannot be negative.")
 
         llm.debug_mode = debug_mode
         self._sampler = EoHSampler(llm, self._template_program_str)
@@ -449,6 +457,7 @@ class PBCLLM:
         )
 
     def _evolve(self):
+        consecutive_errors = 0
         while self._continue_loop():
             operators = []
             if self._use_e1_operator:
@@ -475,17 +484,37 @@ class PBCLLM:
                     self._sample_evaluate_register(prompt)
                 except KeyboardInterrupt:
                     raise
-                except Exception:
+                except Exception as exc:
+                    consecutive_errors += 1
+                    print(
+                        "PBCLLM sampling error "
+                        f"{consecutive_errors}/{self._max_consecutive_sampling_errors}: "
+                        f"{type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
                     if self._debug_mode:
                         traceback.print_exc()
+                    if consecutive_errors >= self._max_consecutive_sampling_errors:
+                        raise RuntimeError(
+                            "PBCLLM stopped after consecutive sampling errors to avoid "
+                            "an infinite retry loop."
+                        ) from exc
+                    if self._sampling_error_backoff_seconds:
+                        time.sleep(
+                            self._sampling_error_backoff_seconds
+                            * min(2 ** (consecutive_errors - 1), 8)
+                        )
                     continue
+                consecutive_errors = 0
 
     def run(self):
-        self._init_population()
-        self._evolve()
         try:
-            self._evaluation_executor.shutdown(cancel_futures=True)
-        except Exception:
-            pass
+            self._init_population()
+            self._evolve()
+        finally:
+            try:
+                self._evaluation_executor.shutdown(cancel_futures=True)
+            except Exception:
+                pass
         if self._profiler is not None:
             self._profiler.finish()

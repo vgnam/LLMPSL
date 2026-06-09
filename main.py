@@ -1,6 +1,7 @@
 import argparse
 import os
 import pytz
+import numpy as np
 from datetime import datetime
 
 # from llm4ad.tools.llm.llm_api_https import HttpsApi
@@ -14,12 +15,14 @@ from llm4ad.method.LLMPFG.resume import resume_eoh
 
 # PBC-LLM method:
 from llm4ad.method.PBCLLM import PBCLLM, PBCProfiler, resume_pbcllm
+from llm4ad.method.eoh import EoH, EoHProfiler
+from llm4ad.method.funsearch import FunSearch
+from llm4ad.method.funsearch.profiler import FunSearchProfiler
+from llm4ad.method.reevo import ReEvo, ReEvoProfiler
+from llm4ad.method.meoh import MEoH, MEoHProfiler
+from llm4ad.method.nsga2 import NSGA2, NSGA2Profiler
+from llm4ad.method.moead import MOEAD, MOEADProfiler
 from llm4ad.task.optimization.registry import PROBLEM_CONFIGS, build_problem
-from llm4ad.tools.evaluate_all_sizes import (
-    evaluate_log_all_sizes,
-    format_reports_table,
-    write_all_size_report,
-)
 from llm4ad.tools.evaluate_population_front import (
     evaluate_population_front_all_sizes,
     format_population_front_table,
@@ -57,6 +60,62 @@ LLM_PROFILES = {
         "cluster_api_key_file": "secret_nvidia_cluster.txt",
     },
 }
+
+METHOD_LOG_LABELS = {
+    "mpage": "LLMPFG",
+    "llmpfg": "LLMPFG",
+    "pbcllm": "PBCLLM",
+    "eoh": "EoH",
+    "funsearch": "FunSearch",
+    "reevo": "ReEvo",
+    "meoh": "MEoH",
+    "nsga2": "NSGA2",
+    "moead": "MOEAD",
+}
+
+SCALAR_HV_BASELINES = {"eoh", "funsearch", "reevo"}
+VECTOR_QT_BASELINES = {"meoh", "nsga2", "moead"}
+
+
+class ScoreProjectionEvaluation:
+    """Project the MOCO evaluator score into the baseline's training objective."""
+
+    def __init__(self, base_evaluation, projection: str):
+        if projection not in {"negative_hv", "negative_hv_runtime"}:
+            raise ValueError(f"Unknown score projection: {projection}")
+        self._base_evaluation = base_evaluation
+        self.score_projection = projection
+
+        self.template_program = base_evaluation.template_program
+        self.task_description = base_evaluation.task_description
+        self.use_numba_accelerate = base_evaluation.use_numba_accelerate
+        self.use_protected_div = base_evaluation.use_protected_div
+        self.protected_div_delta = base_evaluation.protected_div_delta
+        self.random_seed = base_evaluation.random_seed
+        self.timeout_seconds = base_evaluation.timeout_seconds
+        self.exec_code = base_evaluation.exec_code
+        self.safe_evaluate = base_evaluation.safe_evaluate
+        self.daemon_eval_process = base_evaluation.daemon_eval_process
+
+    def __getattr__(self, name):
+        return getattr(self._base_evaluation, name)
+
+    def evaluate_program(self, program_str: str, callable_func: callable):
+        score = self._base_evaluation.evaluate_program(program_str, callable_func)
+        if score is None:
+            return None
+        if isinstance(score, dict):
+            score = score.get("legacy_score")
+        if not isinstance(score, (list, tuple, np.ndarray)) or len(score) == 0:
+            return None
+        values = [float(value) for value in score]
+        if not all(np.isfinite(values)):
+            return None
+        if self.score_projection == "negative_hv":
+            return values[0]
+        if len(values) < 2:
+            return None
+        return np.array([values[0], values[1]], dtype=float)
 
 
 def read_api_key(env_name, file_name, fallback=None):
@@ -113,7 +172,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run MPaGE heuristic search.")
     parser.add_argument(
         "--method",
-        choices=("mpage", "llmpfg", "pbcllm", "both"),
+        choices=tuple(METHOD_LOG_LABELS) + ("both",),
         default="mpage",
         help="Search method to run. llmpfg=MPaGE baseline, pbcllm=Pareto Behavior Coevolution. Defaults to mpage.",
     )
@@ -182,18 +241,13 @@ def _looks_like_log_dir(path):
 
 
 def _latest_resume_log_dir(method_name, problem):
-    if method_name in ("mpage", "llmpfg"):
-        search_roots = [
-            os.path.join("logs", "LLMPFG", problem),
-            os.path.join("logs", "LLMPFG"),
-        ]
-    elif method_name == "pbcllm":
-        search_roots = [
-            os.path.join("logs", "PBCLLM", problem),
-            os.path.join("logs", "PBCLLM"),
-        ]
-    else:
+    label = METHOD_LOG_LABELS.get(method_name)
+    if label is None:
         raise ValueError(f"--resume-latest is not supported for method={method_name!r}.")
+    search_roots = [
+        os.path.join("logs", label, problem),
+        os.path.join("logs", label),
+    ]
 
     candidates = []
     seen = set()
@@ -221,6 +275,8 @@ def resolve_resume_log_dir(args):
         return None
     if args.method == "both":
         raise ValueError("Resume can be used with one method at a time, not --method both.")
+    if args.method not in {"mpage", "llmpfg", "pbcllm"}:
+        raise ValueError(f"Resume is currently wired only for mpage/llmpfg/pbcllm, not method={args.method!r}.")
 
     log_dir = _latest_resume_log_dir(args.method, args.problem) if args.resume_latest else args.resume_log_dir
     log_dir = os.path.abspath(log_dir)
@@ -233,6 +289,47 @@ def resolve_resume_log_dir(args):
         if not os.path.isdir(child_path):
             raise FileNotFoundError(f"Resume log directory is missing {child_path}")
     return log_dir
+
+
+def _timestamped_log_dir(method_name, problem, problem_size, resume_log_dir=None):
+    if resume_log_dir:
+        return resume_log_dir
+    timestamp = datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%Y%m%d_%H%M%S")
+    size_str = str(problem_size) if problem_size is not None else "default"
+    return os.path.join(
+        "logs",
+        METHOD_LOG_LABELS[method_name],
+        problem,
+        f"{timestamp}_{size_str}",
+    )
+
+
+def _profiler_kwargs(method_name, args):
+    label = METHOD_LOG_LABELS[method_name]
+    final_log_dir = _timestamped_log_dir(method_name, args.problem, args.problem_size, args.resume_log_dir)
+    return {
+        "log_dir": os.path.join("logs", label, args.problem),
+        "evaluation_name": args.problem,
+        "method_name": label,
+        "log_style": "complex",
+        "final_log_dir": final_log_dir,
+    }
+
+
+def _report_score_vector(score):
+    if score is None:
+        return []
+    if isinstance(score, np.ndarray):
+        score = score.tolist()
+    elif not isinstance(score, (list, tuple)):
+        score = [score]
+    try:
+        values = [float(value) for value in score]
+    except (TypeError, ValueError):
+        return []
+    if not values or not all(np.isfinite(values)):
+        return []
+    return values
 
 
 def build_method(method_name, llm, llm_cluster, task, args):
@@ -258,21 +355,13 @@ def build_method(method_name, llm, llm_cluster, task, args):
                   )
 
     if method_name == "pbcllm":
-        timestamp = datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%Y%m%d_%H%M%S")
-        size_str = str(args.problem_size) if args.problem_size is not None else "default"
-        final_log_dir = args.resume_log_dir or os.path.join(
-            "logs",
-            "PBCLLM",
-            args.problem,
-            f"{timestamp}_{size_str}",
-        )
         return PBCLLM(llm=llm,
                       llm_cluster=llm_cluster,
                       profiler=PBCProfiler(
                            log_dir=os.path.join("logs", "PBCLLM", args.problem),
                            evaluation_name=args.problem,
                            log_style='complex',
-                           final_log_dir=final_log_dir,
+                           final_log_dir=_timestamped_log_dir(method_name, args.problem, args.problem_size, args.resume_log_dir),
                       ),
                       evaluation=task,
                       max_sample_nums=args.max_sample_nums if args.max_sample_nums is not None else 200,
@@ -287,6 +376,76 @@ def build_method(method_name, llm, llm_cluster, task, args):
                       parent_selection_strategy=args.pbcllm_parent_selection,
                     )
 
+    max_samples = args.max_sample_nums if args.max_sample_nums is not None else 200
+    if method_name in SCALAR_HV_BASELINES:
+        task = ScoreProjectionEvaluation(task, "negative_hv")
+    elif method_name in VECTOR_QT_BASELINES:
+        task = ScoreProjectionEvaluation(task, "negative_hv_runtime")
+
+    if method_name == "eoh":
+        return EoH(llm=llm,
+                   profiler=EoHProfiler(**_profiler_kwargs(method_name, args)),
+                   evaluation=task,
+                   max_sample_nums=max_samples,
+                   max_generations=None,
+                   pop_size=10,
+                   num_samplers=1,
+                   num_evaluators=1)
+
+    if method_name == "funsearch":
+        return FunSearch(llm=llm,
+                         profiler=FunSearchProfiler(**_profiler_kwargs(method_name, args)),
+                         evaluation=task,
+                         max_sample_nums=max_samples,
+                         samples_per_prompt=1,
+                         num_samplers=1,
+                         num_evaluators=1)
+
+    if method_name == "reevo":
+        return ReEvo(llm=llm,
+                     profiler=ReEvoProfiler(**_profiler_kwargs(method_name, args)),
+                     evaluation=task,
+                     max_sample_nums=max_samples,
+                     pop_size=10,
+                     num_samplers=1,
+                     num_evaluators=1)
+
+    if method_name == "meoh":
+        return MEoH(llm=llm,
+                    profiler=MEoHProfiler(**_profiler_kwargs(method_name, args)),
+                    evaluation=task,
+                    max_sample_nums=max_samples,
+                    max_generations=None,
+                    pop_size=80,
+                    selection_num=2,
+                    num_samplers=1,
+                    num_evaluators=1,
+                    num_objs=2)
+
+    if method_name == "nsga2":
+        return NSGA2(llm=llm,
+                     profiler=NSGA2Profiler(**_profiler_kwargs(method_name, args)),
+                     evaluation=task,
+                     max_sample_nums=max_samples,
+                     max_generations=None,
+                     pop_size=80,
+                     selection_num=5,
+                     num_samplers=1,
+                     num_evaluators=1,
+                     num_objs=2)
+
+    if method_name == "moead":
+        return MOEAD(llm=llm,
+                     profiler=MOEADProfiler(**_profiler_kwargs(method_name, args)),
+                     evaluation=task,
+                     max_sample_nums=max_samples,
+                     max_generations=None,
+                     pop_size=80,
+                     selection_num=5,
+                     num_samplers=1,
+                     num_evaluators=1,
+                     num_objs=2)
+
     raise ValueError(f"Unknown method={method_name!r}")
 
 
@@ -299,7 +458,6 @@ def main():
         method_names = ["llmpfg", "pbcllm"]
     else:
         method_names = [args.method]
-    post_eval_reports = []
     population_front_reports = []
 
     for method_name in method_names:
@@ -361,15 +519,15 @@ def main():
                     best_by_preference = [min(col) for col in zip(*preference_matrix)]
                     print(f"[Report] Best score vector values: {best_by_preference}")
             else:
-                best_func = min(
-                    pop.population,
-                    key=lambda f: f.score[0]
-                    if getattr(f, "score", None) and len(f.score) > 0
-                    else float("inf"),
-                )
-                if getattr(best_func, "score", None) and len(best_func.score) > 0:
-                    print(f"[Report] Best individual train score: {best_func.score}")
-                    print(f"[Report] Best train HV: {-best_func.score[0]:.6f}")
+                valid_scores = [
+                    (func, _report_score_vector(getattr(func, "score", None)))
+                    for func in pop.population
+                ]
+                valid_scores = [(func, score) for func, score in valid_scores if score]
+                if valid_scores:
+                    best_func, best_score = min(valid_scores, key=lambda item: item[1][0])
+                    print(f"[Report] Best individual train score: {getattr(best_func, 'score', best_score)}")
+                    print(f"[Report] Best train HV: {-best_score[0]:.6f}")
 
         profiler = getattr(method, "_profiler", None)
         log_dir = getattr(profiler, "_log_dir", None)
@@ -388,71 +546,43 @@ def main():
             print(f"\n{'='*60}")
             print(f"Post-evaluation on all available instance sizes for {method_name}...")
             print(f"{'='*60}")
-            if method_name in {"mpage", "llmpfg", "pbcllm"}:
-                report = evaluate_population_front_all_sizes(
-                    log_dir,
-                    method=method_name,
-                    problem=args.problem,
-                    top_k=args.post_eval_top_k,
-                    seed=args.seed,
-                    eval_seed=args.post_eval_seed,
-                    timeout_seconds=args.post_eval_timeout_seconds,
-                )
-                write_population_front_report(report)
-                population_front_reports.append(report)
-                print(f"\n{'-'*60}")
-                print(f"Population-front results for {method_name} on {args.problem}")
-                print(f"{'-'*60}")
-                print(
-                    f"{'Size':>8} | {'Instances':>10} | {'Valid':>8} | "
-                    f"{'Pop HV':>12} | {'HV std':>10} | {'Points':>10}"
-                )
-                for item in report.get("sizes", []):
-                    size = item.get("problem_size", "?")
-                    n_ins = item.get("n_instance", "?")
-                    valid = f"{item.get('num_valid',0)}/{item.get('num_evaluated',0)}"
-                    pop_hv = item.get("population_front_hv")
-                    hv_std = item.get("population_front_hv_std")
-                    points = item.get("mean_population_front_points")
-                    if pop_hv is None:
-                        print(
-                            f"{size:>8} | {n_ins:>10} | {valid:>8} | "
-                            f"{'N/A':>12} | {'N/A':>10} | {'N/A':>10}"
-                        )
-                    else:
-                        print(
-                            f"{size:>8} | {n_ins:>10} | {valid:>8} | "
-                            f"{pop_hv:>12.6f} | {hv_std:>10.6f} | {points:>10.2f}"
-                        )
-                print(f"{'-'*60}\n")
-            else:
-                report = evaluate_log_all_sizes(
-                    log_dir,
-                    method=method_name,
-                    problem=args.problem,
-                    top_k=args.post_eval_top_k,
-                    seed=args.seed,
-                    eval_seed=args.post_eval_seed,
-                    timeout_seconds=args.post_eval_timeout_seconds,
-                )
-                write_all_size_report(report)
-                post_eval_reports.append(report)
-                # Print summary immediately
-                print(f"\n{'-'*60}")
-                print(f"Results for {method_name} on {args.problem}")
-                print(f"{'-'*60}")
-                print(f"{'Size':>8} | {'Instances':>10} | {'Valid':>8} | {'Best HV':>12} | {'Mean HV':>12}")
-                for item in report.get("sizes", []):
-                    size = item.get("problem_size", "?")
-                    n_ins = item.get("n_instance", "?")
-                    valid = f"{item.get('num_valid',0)}/{item.get('num_evaluated',0)}"
-                    best_hv = item.get("best_inner_hv")
-                    mean_hv = item.get("mean_inner_hv")
-                    print(f"{size:>8} | {n_ins:>10} | {valid:>8} | {best_hv:>12.6f} | {mean_hv:>12.6f}" if best_hv is not None else f"{size:>8} | {n_ins:>10} | {valid:>8} | {'N/A':>12} | {'N/A':>12}")
-                print(f"{'-'*60}\n")
+            report = evaluate_population_front_all_sizes(
+                log_dir,
+                method=method_name,
+                problem=args.problem,
+                top_k=args.post_eval_top_k,
+                seed=args.seed,
+                eval_seed=args.post_eval_seed,
+                timeout_seconds=args.post_eval_timeout_seconds,
+            )
+            write_population_front_report(report)
+            population_front_reports.append(report)
+            print(f"\n{'-'*60}")
+            print(f"Population-front results for {method_name} on {args.problem}")
+            print(f"{'-'*60}")
+            print(
+                f"{'Size':>8} | {'Instances':>10} | {'Valid':>8} | "
+                f"{'Pop HV':>12} | {'HV std':>10} | {'Points':>10}"
+            )
+            for item in report.get("sizes", []):
+                size = item.get("problem_size", "?")
+                n_ins = item.get("n_instance", "?")
+                valid = f"{item.get('num_valid',0)}/{item.get('num_evaluated',0)}"
+                pop_hv = item.get("population_front_hv")
+                hv_std = item.get("population_front_hv_std")
+                points = item.get("mean_population_front_points")
+                if pop_hv is None:
+                    print(
+                        f"{size:>8} | {n_ins:>10} | {valid:>8} | "
+                        f"{'N/A':>12} | {'N/A':>10} | {'N/A':>10}"
+                    )
+                else:
+                    print(
+                        f"{size:>8} | {n_ins:>10} | {valid:>8} | "
+                        f"{pop_hv:>12.6f} | {hv_std:>10.6f} | {points:>10.2f}"
+                    )
+            print(f"{'-'*60}\n")
 
-    if post_eval_reports:
-        print(format_reports_table(post_eval_reports))
     if population_front_reports:
         print(format_population_front_table(population_front_reports))
 
