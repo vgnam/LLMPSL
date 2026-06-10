@@ -47,6 +47,7 @@ python main.py --method mpage
 python main.py --method pbcllm
 python main.py --method pbcllm --pbcllm-eval-seeds 2025
 python main.py --method pbcllm --pbcllm-parent-selection complementary_behavior
+python main.py --method eoh --problem bi_tsp --evaluate-sizes 20 50 100
 ```
 
 PBCLLM evaluates every generated heuristic with the same fixed seed list and

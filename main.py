@@ -216,10 +216,18 @@ def parse_args():
         action="store_true",
         help="Resume from the latest log directory for the selected method and problem.",
     )
-    parser.add_argument(
+    post_eval_group = parser.add_mutually_exclusive_group()
+    post_eval_group.add_argument(
         "--evaluate-all-sizes",
         action="store_true",
         help="After training, reevaluate the final population on all available sizes for the selected problem.",
+    )
+    post_eval_group.add_argument(
+        "--evaluate-sizes",
+        type=int,
+        nargs="+",
+        default=None,
+        help="After training, reevaluate the final population only on these problem sizes.",
     )
     parser.add_argument(
         "--post-eval-top-k",
@@ -555,9 +563,12 @@ def main():
             )
             write_behavior_novelty_report(behavior_report)
 
-        if args.evaluate_all_sizes and log_dir:
+        if (args.evaluate_all_sizes or args.evaluate_sizes) and log_dir:
             print(f"\n{'='*60}")
-            print(f"Post-evaluation on all available instance sizes for {method_name}...")
+            if args.evaluate_sizes:
+                print(f"Post-evaluation on problem sizes {args.evaluate_sizes} for {method_name}...")
+            else:
+                print(f"Post-evaluation on all available instance sizes for {method_name}...")
             print(f"{'='*60}")
             report = evaluate_population_front_all_sizes(
                 log_dir,
@@ -567,6 +578,7 @@ def main():
                 seed=args.seed,
                 eval_seed=args.post_eval_seed,
                 timeout_seconds=args.post_eval_timeout_seconds,
+                problem_sizes=args.evaluate_sizes,
             )
             write_population_front_report(report)
             population_front_reports.append(report)

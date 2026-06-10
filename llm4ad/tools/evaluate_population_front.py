@@ -243,8 +243,12 @@ def evaluate_population_front_all_sizes(
     eval_seed: int | None = 2025,
     timeout_seconds: int | None = None,
     problem_size: int | None = None,
+    problem_sizes: list[int] | None = None,
     n_instance: int | None = None,
 ) -> dict[str, Any]:
+    if problem_size is not None and problem_sizes is not None:
+        raise ValueError("Use either problem_size or problem_sizes, not both.")
+
     problem = normalize_problem_name(problem)
     log_dir = Path(log_dir)
     records = load_final_records(log_dir)
@@ -252,6 +256,9 @@ def evaluate_population_front_all_sizes(
     size_configs = discover_size_configs(problem, seed=seed)
     if problem_size is not None:
         size_configs = [item for item in size_configs if item["problem_size"] == problem_size]
+    if problem_sizes is not None:
+        selected_sizes = set(problem_sizes)
+        size_configs = [item for item in size_configs if item["problem_size"] in selected_sizes]
     if n_instance is not None:
         size_configs = [item for item in size_configs if item["n_instance"] == n_instance]
 
@@ -386,7 +393,15 @@ def main():
     parser.add_argument("--method", required=True)
     parser.add_argument("--log-dir", required=True)
     parser.add_argument("--top-k", type=int, default=0, help="0 means evaluate the whole final population.")
-    parser.add_argument("--problem-size", type=int, default=None)
+    size_group = parser.add_mutually_exclusive_group()
+    size_group.add_argument("--problem-size", type=int, default=None)
+    size_group.add_argument(
+        "--problem-sizes",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Evaluate only these problem sizes, for example: --problem-sizes 20 50 100.",
+    )
     parser.add_argument("--n-instance", type=int, default=None)
     parser.add_argument("--seed", type=int, default=2025)
     parser.add_argument("--eval-seed", type=int, default=2025)
@@ -403,6 +418,7 @@ def main():
         eval_seed=args.eval_seed,
         timeout_seconds=args.timeout_seconds,
         problem_size=args.problem_size,
+        problem_sizes=args.problem_sizes,
         n_instance=args.n_instance,
     )
     if not args.no_write:

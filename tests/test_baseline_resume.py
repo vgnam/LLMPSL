@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from llm4ad.base import LLM, SampleTrimmer, TextFunctionProgramConverter
 from llm4ad.method.eoh.population import Population as EoHPopulation
@@ -168,6 +170,19 @@ class BaselineResumeTests(unittest.TestCase):
                     problem="bi_tsp",
                 )
                 self.assertEqual(resolve_resume_log_dir(args), os.path.abspath(log_dir))
+
+    def test_cli_accepts_selected_post_evaluation_sizes(self):
+        import main
+
+        with patch.object(
+            sys,
+            "argv",
+            ["main.py", "--method", "eoh", "--problem", "bi_tsp", "--evaluate-sizes", "20", "50", "100"],
+        ):
+            args = main.parse_args()
+
+        self.assertFalse(args.evaluate_all_sizes)
+        self.assertEqual(args.evaluate_sizes, [20, 50, 100])
 
     def test_cli_finds_latest_log_for_every_baseline(self):
         from main import METHOD_LOG_LABELS, resolve_resume_log_dir

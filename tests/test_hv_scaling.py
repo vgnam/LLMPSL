@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 from pymoo.indicators.hv import HV
@@ -17,6 +19,7 @@ from llm4ad.task.optimization.hv_utils import (
 from llm4ad.task.optimization.tri_tsp_semo.evaluation import TRITSPEvaluation
 from llm4ad.tools.evaluate_population_front import (
     _additive_epsilon_to_ideal,
+    evaluate_population_front_all_sizes,
     _population_front_summary,
     _spacing,
 )
@@ -108,6 +111,42 @@ class HypervolumeScalingTests(unittest.TestCase):
         self.assertAlmostEqual(summary["mean_additive_epsilon"], 0.645)
         self.assertGreater(summary["mean_spacing"], 0.0)
         self.assertGreater(summary["spacing_std"], 0.0)
+
+    def test_population_front_evaluation_accepts_multiple_problem_sizes(self):
+        size_configs = [
+            {"problem_size": 20, "n_instance": 10},
+            {"problem_size": 20, "n_instance": 20},
+            {"problem_size": 50, "n_instance": 20},
+            {"problem_size": 100, "n_instance": 20},
+            {"problem_size": 200, "n_instance": 20},
+        ]
+        with (
+            patch("llm4ad.tools.evaluate_population_front.load_final_records", return_value=[]),
+            patch("llm4ad.tools.evaluate_population_front.discover_size_configs", return_value=size_configs),
+            patch("llm4ad.tools.evaluate_population_front.build_problem") as build_problem,
+        ):
+            report = evaluate_population_front_all_sizes(
+                Path("unused"),
+                method="test",
+                problem="bi_tsp",
+                problem_sizes=[20, 50, 100],
+            )
+
+        self.assertEqual(
+            [(item["problem_size"], item["n_instance"]) for item in report["sizes"]],
+            [(20, 10), (20, 20), (50, 20), (100, 20)],
+        )
+        self.assertEqual(build_problem.call_count, 4)
+
+    def test_population_front_evaluation_rejects_both_size_filters(self):
+        with self.assertRaisesRegex(ValueError, "either problem_size or problem_sizes"):
+            evaluate_population_front_all_sizes(
+                Path("unused"),
+                method="test",
+                problem="bi_tsp",
+                problem_size=20,
+                problem_sizes=[20, 50],
+            )
 
 
 if __name__ == "__main__":
