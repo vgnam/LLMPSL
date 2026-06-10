@@ -55,6 +55,7 @@ class EoH:
                  use_m2_operator: bool = True,
                  num_samplers: int = 1,
                  num_evaluators: int = 1,
+                 max_evaluation_retries: int = 1,
                  *,
                  resume_mode: bool = False,
                  debug_mode: bool = False,
@@ -74,6 +75,7 @@ class EoH:
             use_e2_operator : if use e2 operator.
             use_m1_operator : if use m1 operator.
             use_m2_operator : if use m2 operator.
+            max_evaluation_retries: number of fresh LLM samples generated after an evaluation returns None.
             resume_mode     : in resume_mode, randsample will not evaluate the template_program, and will skip the init process. TODO: More detailed usage.
             debug_mode      : if set to True, we will print detailed information.
             multi_thread_or_process_eval: use 'concurrent.futures.ThreadPoolExecutor' or 'concurrent.futures.ProcessPoolExecutor' for the usage of
@@ -96,6 +98,9 @@ class EoH:
         # samplers and evaluators
         self._num_samplers = num_samplers
         self._num_evaluators = num_evaluators
+        if max_evaluation_retries < 0:
+            raise ValueError("max_evaluation_retries must be non-negative.")
+        self._max_evaluation_retries = max_evaluation_retries
         self._resume_mode = resume_mode
         self._debug_mode = debug_mode
         llm.debug_mode = debug_mode
@@ -172,33 +177,36 @@ class EoH:
         2. Evaluate it by submitting to the process/thread pool, and get the results.
         3. Add the function to the population and register it to the profiler.
         """
-        sample_start = time.time()
-        thought, func = self._sampler.get_thought_and_function(prompt)
-        sample_time = time.time() - sample_start
-        if thought is None or func is None:
-            return
-        # convert to Program instance
-        program = TextFunctionProgramConverter.function_to_program(func, self._template_program)
-        if program is None:
-            return
-        # evaluate
-        score, eval_time = self._evaluation_executor.submit(
-            self._evaluator.evaluate_program_record_time,
-            program
-        ).result()
-        # register to profiler
-        func.score = score
-        func.evaluate_time = eval_time
-        func.algorithm = thought
-        func.sample_time = sample_time
-        if self._profiler is not None:
-            self._profiler.register_function(func, program=str(program))
-            if isinstance(self._profiler, EoHProfiler):
-                self._profiler.register_population(self._population)
+        for retry_index in range(self._max_evaluation_retries + 1):
+            sample_start = time.time()
+            thought, func = self._sampler.get_thought_and_function(prompt)
+            sample_time = time.time() - sample_start
+            if thought is None or func is None:
+                return
+            # convert to Program instance
+            program = TextFunctionProgramConverter.function_to_program(func, self._template_program)
+            if program is None:
+                return
+            # evaluate
+            score, eval_time = self._evaluation_executor.submit(
+                self._evaluator.evaluate_program_record_time,
+                program
+            ).result()
+            # register to profiler
+            func.score = score
+            func.evaluate_time = eval_time
+            func.algorithm = thought
+            func.sample_time = sample_time
+            if self._profiler is not None:
+                self._profiler.register_function(func, program=str(program))
+                if isinstance(self._profiler, EoHProfiler):
+                    self._profiler.register_population(self._population)
             self._tot_sample_nums += 1
-
-        # register to the population
-        self._population.register_function(func)
+            if score is not None:
+                self._population.register_function(func)
+                return
+            if retry_index >= self._max_evaluation_retries or not self._continue_loop():
+                return
 
     def _continue_loop(self) -> bool:
         if self._max_generations is None and self._max_sample_nums is None:

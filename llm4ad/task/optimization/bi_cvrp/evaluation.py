@@ -5,7 +5,7 @@ import numpy as np
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.bi_cvrp.get_instance import GetData
 from llm4ad.task.optimization.bi_cvrp.template import template_program, task_description
-from llm4ad.task.optimization.hv_utils import scale_hypervolume
+from llm4ad.task.optimization.hv_utils import DEFAULT_SEARCH_ITERATIONS, scale_hypervolume
 from pymoo.indicators.hv import HV 
 import random
 import time
@@ -126,6 +126,7 @@ def evaluate(
     *,
     return_mo_trace: bool = False,
     trace_points: int = 21,
+    total_iterations: int = DEFAULT_SEARCH_ITERATIONS,
 ):
     if eval_seed is not None:
         random.seed(eval_seed)
@@ -134,7 +135,6 @@ def evaluate(
     obj_2 = np.ones(n_instance)
     final_list = []
     archive_trajectories = []
-    total_iterations = 6000
     checkpoints = set(np.linspace(0, total_iterations, trace_points, dtype=int).tolist())
     for i, (coords, demand, distance_matrix) in enumerate(instance_data):
         start = time.time()
@@ -202,6 +202,7 @@ class BICVRPEvaluation(Evaluation):
         self.problem_size = problem_size
         self.eval_seed = eval_seed
         self.return_mo_trace = return_mo_trace
+        self.search_iterations = DEFAULT_SEARCH_ITERATIONS
         self.objective_num = 2
         self.objective_labels = ("total_distance", "longest_route")
         getData = GetData(self.n_instance, self.problem_size, seed=seed, data_dir=data_dir)
@@ -217,6 +218,7 @@ class BICVRPEvaluation(Evaluation):
             callable_func,
             self.eval_seed,
             return_mo_trace=self.return_mo_trace,
+            total_iterations=self.search_iterations,
         )
     
 

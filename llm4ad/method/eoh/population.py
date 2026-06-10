@@ -47,33 +47,29 @@ class Population:
         self._generation += 1
 
     def register_function(self, func: Function):
-        # in population initialization, we only accept valid functions
-        if self._generation == 0 and func.score is None:
-            return
-        # if the score is None, we still put it into the population,
-        # we set the score to 'inf'
-        if func.score is None:
-            func.score = float('inf')
+        if func.score is None or not math.isfinite(func.score):
+            return False
         try:
             self._lock.acquire()
             if self.has_duplicate_function(func):
-                func.score = float('-inf')
+                return False
             # register to next_gen
             self._next_gen_pop.append(func)
             # update: perform survival if reach the pop size
             if len(self._next_gen_pop) >= self._pop_size:
                 self.survival()
-        except Exception as e:
-            return
+            return True
+        except Exception:
+            return False
         finally:
             self._lock.release()
 
     def has_duplicate_function(self, func: str | Function) -> bool:
         for f in self._population:
-            if str(f) == str(func) or func.score == f.score:
+            if str(f) == str(func):
                 return True
         for f in self._next_gen_pop:
-            if str(f) == str(func) or func.score == f.score:
+            if str(f) == str(func):
                 return True
         return False
 

@@ -5,7 +5,7 @@ import numpy as np
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.bi_kp.get_instance import GetData
 from llm4ad.task.optimization.bi_kp.template import template_program, task_description
-from llm4ad.task.optimization.hv_utils import scale_hypervolume
+from llm4ad.task.optimization.hv_utils import DEFAULT_SEARCH_ITERATIONS, scale_hypervolume
 from pymoo.indicators.hv import HV
 import random
 import time
@@ -84,12 +84,14 @@ def evaluate(
     n_instance,
     problem_size,
     ref_point,
+    ideal_point,
     capacity,
     eva: callable,
     eval_seed: int | None = None,
     *,
     return_mo_trace: bool = False,
     trace_points: int = 21,
+    total_iterations: int = DEFAULT_SEARCH_ITERATIONS,
 ):
     if eval_seed is not None:
         random.seed(eval_seed)
@@ -99,7 +101,6 @@ def evaluate(
     n_ins = 0
     final_list = []
     archive_trajectories = []
-    total_iterations = 8000
     checkpoints = set(np.linspace(0, total_iterations, trace_points, dtype=int).tolist())
     for weight_lst, value1_lst, value2_lst in instance_data:
         start = time.time()
@@ -137,7 +138,7 @@ def evaluate(
         archive_trajectories.append(trajectory)
         hv_indicator = HV(ref_point=ref_point)
         hv_value = hv_indicator(objs)
-        obj_1[n_ins] = -scale_hypervolume(hv_value, ref_point)
+        obj_1[n_ins] = -scale_hypervolume(hv_value, ref_point, ideal_point)
         obj_2[n_ins] = end - start
         n_ins += 1
     if return_mo_trace:
@@ -175,11 +176,15 @@ class BIKPEvaluation(Evaluation):
         self.problem_size = problem_size
         self.eval_seed = eval_seed
         self.return_mo_trace = return_mo_trace
+        self.search_iterations = DEFAULT_SEARCH_ITERATIONS
         self.objective_num = 2
         self.objective_labels = ("negative_value_1", "negative_value_2")
         getData = GetData(self.n_instance, self.problem_size, seed=seed, data_dir=data_dir)
         self._datasets, self.cap = getData.generate_instances() 
         self.ref_point = estimate_reference_point(self._datasets, self.cap, self.problem_size) 
+        self.ideal_point = np.full(self.objective_num, -float(self.problem_size))
+        self.normalization_ideal = self.ideal_point.copy()
+        self.normalization_nadir = self.ref_point.copy()
 
     def evaluate_program(self, program_str: str, callable_func: callable):
         return evaluate(
@@ -187,10 +192,12 @@ class BIKPEvaluation(Evaluation):
             self.n_instance,
             self.problem_size,
             self.ref_point,
+            self.ideal_point,
             self.cap,
             callable_func,
             self.eval_seed,
             return_mo_trace=self.return_mo_trace,
+            total_iterations=self.search_iterations,
         )
     
 import numpy as np

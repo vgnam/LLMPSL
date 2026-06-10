@@ -52,23 +52,41 @@ def _evaluate_log_front(
     n_instance: int | None,
     seed: int,
     eval_seed: int | None,
+    eval_repeats: int = 1,
+    search_iterations: int | None = None,
     timeout_seconds: int | None,
     top_k: int,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    evaluator = build_problem(
-        problem,
-        n_instance=n_instance,
-        problem_size=problem_size,
-        seed=seed,
-        eval_seed=eval_seed,
-        timeout_seconds=timeout_seconds,
-    )
-    setattr(evaluator, "return_mo_trace", True)
-    evaluator.safe_evaluate = False
+    if eval_repeats < 1:
+        raise ValueError("eval_repeats must be at least 1.")
+    if search_iterations is not None and search_iterations < 1:
+        raise ValueError("search_iterations must be at least 1.")
 
     records = load_final_records(log_dir)
     selected = _select_records(records, top_k=top_k)
-    trace_results = [_evaluate_trace_record(record, evaluator) for record in selected]
+    eval_seeds = [None] * eval_repeats if eval_seed is None else [eval_seed + idx for idx in range(eval_repeats)]
+    trace_results = []
+    evaluator = None
+    for repeat_seed in eval_seeds:
+        evaluator = build_problem(
+            problem,
+            n_instance=n_instance,
+            problem_size=problem_size,
+            seed=seed,
+            eval_seed=repeat_seed,
+            timeout_seconds=timeout_seconds,
+        )
+        if search_iterations is not None:
+            if not hasattr(evaluator, "search_iterations"):
+                raise ValueError(f"{problem} does not support a plot-only search iteration override.")
+            evaluator.search_iterations = search_iterations
+        setattr(evaluator, "return_mo_trace", True)
+        evaluator.safe_evaluate = False
+        trace_results.extend(_evaluate_trace_record(record, evaluator) for record in selected)
+
+    if evaluator is None:
+        raise RuntimeError("No evaluator was created.")
+
     front = _merge_population_front(trace_results, evaluator.n_instance)
     ref_point = np.asarray(getattr(evaluator, "ref_point"), dtype=float)
 
@@ -77,6 +95,9 @@ def _evaluate_log_front(
         "num_records": len(records),
         "num_selected": len(selected),
         "num_valid": sum(1 for item in trace_results if item.get("status") == "ok"),
+        "eval_repeats": eval_repeats,
+        "eval_seeds": eval_seeds,
+        "search_iterations": getattr(evaluator, "search_iterations", None),
         "problem_size": evaluator.problem_size,
         "n_instance": evaluator.n_instance,
         "ref_point": ref_point.tolist(),
@@ -232,6 +253,18 @@ def main():
     parser.add_argument("--n-instance", type=int, default=10)
     parser.add_argument("--seed", type=int, default=2025)
     parser.add_argument("--eval-seed", type=int, default=2025)
+    parser.add_argument(
+        "--eval-repeats",
+        type=int,
+        default=1,
+        help="Number of consecutive eval seeds to merge into each plotted front.",
+    )
+    parser.add_argument(
+        "--search-iterations",
+        type=int,
+        default=None,
+        help="Plot-only override for the inner search iterations; normal evaluation defaults are unchanged.",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=None)
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--output", default=None)
@@ -252,6 +285,8 @@ def main():
             n_instance=args.n_instance,
             seed=args.seed,
             eval_seed=args.eval_seed,
+            eval_repeats=args.eval_repeats,
+            search_iterations=args.search_iterations,
             timeout_seconds=args.timeout_seconds,
             top_k=args.top_k,
         )
@@ -263,7 +298,12 @@ def main():
     if ref_point is None:
         raise RuntimeError("No fronts were evaluated.")
 
-    title = f"{problem} population Pareto front, size={args.problem_size}, n={args.n_instance}"
+    title = (
+        f"{problem} population Pareto front, size={args.problem_size}, "
+        f"n={args.n_instance}, repeats={args.eval_repeats}"
+    )
+    if args.search_iterations is not None:
+        title += f", iterations={args.search_iterations}"
     _plot_fronts(fronts, ref_point, output, title)
 
     summary_path = output.with_suffix(".json")

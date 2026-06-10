@@ -71,6 +71,16 @@ def _hv_ref_point(evaluator, objective_num: int):
     return ref_point
 
 
+def _hv_ideal_point(evaluator, objective_num: int):
+    ideal_point = getattr(evaluator, "ideal_point", None)
+    if ideal_point is None:
+        return None
+    ideal_point = np.asarray(ideal_point, dtype=float)
+    if ideal_point.shape != (objective_num,) or not np.all(np.isfinite(ideal_point)):
+        return None
+    return ideal_point
+
+
 def _evaluate_trace(func: Function, evaluator, preference_vectors, rho: float):
     program = TextFunctionProgramConverter.function_to_program(func, evaluator.template_program)
     if program is None:
@@ -93,6 +103,7 @@ def _evaluate_trace(func: Function, evaluator, preference_vectors, rho: float):
         normalization_ideal=ideal,
         normalization_nadir=nadir,
         hv_ref_point=_hv_ref_point(evaluator, objective_num),
+        hv_ideal_point=_hv_ideal_point(evaluator, objective_num),
     )
     if pbc is None:
         return None, {

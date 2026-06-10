@@ -170,6 +170,7 @@ class FunSearch:
                         function.score = score
                         function.sample_time = avg_time_for_each_sample
                         function.evaluate_time = eval_time
+                        function.island_id = island_id
                         self._profiler.register_function(function, program=str(program))
                         if isinstance(self._profiler, FunSearchProfiler):
                             self._profiler.register_program_db(self._database)

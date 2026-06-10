@@ -81,7 +81,11 @@ def _nondominated_min(points: np.ndarray) -> np.ndarray:
     return points[keep]
 
 
-def _mean_scaled_hv(fronts: list, ref_point: np.ndarray | None) -> float:
+def _mean_scaled_hv(
+    fronts: list,
+    ref_point: np.ndarray | None,
+    ideal_point: np.ndarray | None = None,
+) -> float:
     if ref_point is None:
         return 0.0
     ref = np.asarray(ref_point, dtype=float)
@@ -94,11 +98,15 @@ def _mean_scaled_hv(fronts: list, ref_point: np.ndarray | None) -> float:
         if points.size == 0 or points.shape[1] != len(ref):
             values.append(0.0)
             continue
-        values.append(scale_hypervolume(hv_indicator(points), ref))
+        values.append(scale_hypervolume(hv_indicator(points), ref, ideal_point))
     return float(np.mean(values)) if values else 0.0
 
 
-def population_front_hv(functions: Sequence[Function], ref_point: np.ndarray | None) -> float:
+def population_front_hv(
+    functions: Sequence[Function],
+    ref_point: np.ndarray | None,
+    ideal_point: np.ndarray | None = None,
+) -> float:
     if ref_point is None or not functions:
         return 0.0
     ref = np.asarray(ref_point, dtype=float)
@@ -124,7 +132,7 @@ def population_front_hv(functions: Sequence[Function], ref_point: np.ndarray | N
             values.append(0.0)
             continue
         front = _nondominated_min(np.vstack(merged))
-        values.append(scale_hypervolume(hv_indicator(front), ref))
+        values.append(scale_hypervolume(hv_indicator(front), ref, ideal_point))
     return float(np.mean(values)) if values else 0.0
 
 
@@ -177,6 +185,7 @@ def analyze_mo_result(
     normalization_ideal: np.ndarray | None = None,
     normalization_nadir: np.ndarray | None = None,
     hv_ref_point: np.ndarray | None = None,
+    hv_ideal_point: np.ndarray | None = None,
 ) -> dict | None:
     if not isinstance(result, dict):
         return None
@@ -236,7 +245,7 @@ def analyze_mo_result(
         except (TypeError, ValueError):
             individual_hv = None
     if individual_hv is None or not math.isfinite(individual_hv):
-        individual_hv = _mean_scaled_hv(sanitized_fronts, hv_ref_point)
+        individual_hv = _mean_scaled_hv(sanitized_fronts, hv_ref_point, hv_ideal_point)
     return {
         "objective_num": objective_num,
         "fronts": sanitized_fronts,
@@ -354,6 +363,7 @@ class Population:
         preference_vectors: np.ndarray,
         *,
         hv_ref_point: np.ndarray | None = None,
+        hv_ideal_point: np.ndarray | None = None,
         normalization_ideal: np.ndarray | None = None,
         normalization_nadir: np.ndarray | None = None,
         rho: float = 0.05,
@@ -369,6 +379,7 @@ class Population:
         self._pop_size = int(pop_size)
         self._preference_vectors = np.asarray(preference_vectors, dtype=float)
         self._hv_ref_point = None if hv_ref_point is None else np.asarray(hv_ref_point, dtype=float)
+        self._hv_ideal_point = None if hv_ideal_point is None else np.asarray(hv_ideal_point, dtype=float)
         self._normalization_ideal = None if normalization_ideal is None else np.asarray(normalization_ideal, dtype=float)
         self._normalization_nadir = None if normalization_nadir is None else np.asarray(normalization_nadir, dtype=float)
         self._rho = float(rho)
@@ -493,11 +504,14 @@ class Population:
         return np.mean(np.vstack(scores), axis=0)
 
     def _annotate_pool_metrics(self, pool: Sequence[Function]):
-        pool_hv = population_front_hv(pool, self._hv_ref_point)
+        pool_hv = population_front_hv(pool, self._hv_ref_point, self._hv_ideal_point)
         for func in pool:
             pbc = getattr(func, "pbc", None) or {}
             without = [other for other in pool if other is not func]
-            contribution = max(0.0, pool_hv - population_front_hv(without, self._hv_ref_point))
+            contribution = max(
+                0.0,
+                pool_hv - population_front_hv(without, self._hv_ref_point, self._hv_ideal_point),
+            )
             diversity = behavior_novelty(func, pool)
             pbc["selection_population_hv"] = pool_hv
             pbc["selection_hv_gain"] = contribution
@@ -539,12 +553,20 @@ class Population:
         return selected
 
     def _refresh_population_metrics(self):
-        self._population_hv = population_front_hv(self._population, self._hv_ref_point)
+        self._population_hv = population_front_hv(
+            self._population,
+            self._hv_ref_point,
+            self._hv_ideal_point,
+        )
         population_preference = self._population_preference_performance(self._population)
         for func in self._population:
             pbc = getattr(func, "pbc", None) or {}
             without = [other for other in self._population if other is not func]
-            contribution = max(0.0, self._population_hv - population_front_hv(without, self._hv_ref_point))
+            contribution = max(
+                0.0,
+                self._population_hv
+                - population_front_hv(without, self._hv_ref_point, self._hv_ideal_point),
+            )
             diversity = behavior_novelty(func, self._population)
             pbc["population_hv"] = self._population_hv
             pbc["population_hv_contribution"] = contribution
@@ -643,8 +665,12 @@ class Population:
         )
 
     def _set_hv_delta(self, selected: Sequence[Function], candidate: Function) -> float:
-        base_hv = population_front_hv(selected, self._hv_ref_point)
-        next_hv = population_front_hv([*selected, candidate], self._hv_ref_point)
+        base_hv = population_front_hv(selected, self._hv_ref_point, self._hv_ideal_point)
+        next_hv = population_front_hv(
+            [*selected, candidate],
+            self._hv_ref_point,
+            self._hv_ideal_point,
+        )
         return max(0.0, next_hv - base_hv)
 
     def _select_hv_complement(self, selected: Sequence[Function]) -> tuple[Function | None, float]:

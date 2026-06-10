@@ -9,7 +9,7 @@ import numpy as np
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.tri_tsp_semo.get_instance import GetData
 from llm4ad.task.optimization.tri_tsp_semo.template import template_program, task_description
-from llm4ad.task.optimization.hv_utils import scale_hypervolume
+from llm4ad.task.optimization.hv_utils import DEFAULT_SEARCH_ITERATIONS, scale_hypervolume
 from pymoo.indicators.hv import HV 
 import random
 import time 
@@ -68,14 +68,18 @@ def estimate_reference_point(instance_data, problem_size, samples_per_instance: 
 
 
 def check_constraint(solution, problem_size):
-    sol = list(solution)
+    try:
+        sol = list(solution)
+    except TypeError:
+        return False
     if len(sol) != problem_size:
         return False
-    if len(set(sol)) != problem_size:
+    if not all(
+        isinstance(node, (int, np.integer)) and not isinstance(node, (bool, np.bool_))
+        for node in sol
+    ):
         return False
-    if not all(0 <= x < problem_size for x in solution):
-        return False
-    return True
+    return set(map(int, sol)) == set(range(problem_size))
 
 
 
@@ -93,6 +97,7 @@ def evaluate(
         *,
         return_mo_trace: bool = False,
         trace_points: int = 21,
+        total_iterations: int = DEFAULT_SEARCH_ITERATIONS,
 ):
         if eval_seed is not None:
             random.seed(eval_seed)
@@ -103,7 +108,6 @@ def evaluate(
         n_ins = 0
         final_list = []
         archive_trajectories = []
-        total_iterations = 20000
         checkpoints = set(np.linspace(0, total_iterations, trace_points, dtype=int).tolist())
         for instance, distance_matrix_1, distance_matrix_2, distance_matrix_3 in instance_data:
             start = time.time()
@@ -194,6 +198,7 @@ class TRITSPEvaluation(Evaluation):
         self.problem_size = problem_size
         self.eval_seed = eval_seed
         self.return_mo_trace = return_mo_trace
+        self.search_iterations = DEFAULT_SEARCH_ITERATIONS
         self.objective_num = 3
         self.objective_labels = ("distance_1", "distance_2", "distance_3")
         getData = GetData(self.n_instance, self.problem_size, seed=seed, data_dir=data_dir)
@@ -209,6 +214,7 @@ class TRITSPEvaluation(Evaluation):
             callable_func,
             self.eval_seed,
             return_mo_trace=self.return_mo_trace,
+            total_iterations=self.search_iterations,
         )
     
 import numpy as np

@@ -73,6 +73,12 @@ python main.py --method mpage --resume-log-dir logs/LLMPFG/20260603_005015_Probl
 python main.py --method mpage --resume-latest --max-sample-nums 400
 python main.py --method pbcllm --resume-log-dir logs/PBCLLM/bi_tsp/<original-run-dir> --max-sample-nums 160
 python main.py --method pbcllm --resume-latest --max-sample-nums 160
+python main.py --method eoh --problem bi_tsp --resume-latest --max-sample-nums 400
+python main.py --method funsearch --problem bi_tsp --resume-latest --max-sample-nums 400
+python main.py --method reevo --problem bi_tsp --resume-latest --max-sample-nums 400
+python main.py --method meoh --problem bi_tsp --resume-latest --max-sample-nums 400
+python main.py --method nsga2 --problem bi_tsp --resume-latest --max-sample-nums 400
+python main.py --method moead --problem bi_tsp --resume-latest --max-sample-nums 400
 ```
 
 PBCLLM resumes in the original log directory. Its JSON logs use the same compact
@@ -82,6 +88,11 @@ Older logs that contain complete Pareto behavior state remain supported and can
 resume without re-evaluating those records.
 Use the same problem, dataset seed, problem size, instance count, and PBCLLM
 evaluation seeds as the original run; only increase `--max-sample-nums`.
+
+The baseline methods `eoh`, `funsearch`, `reevo`, `meoh`, `nsga2`, and `moead`
+also resume in their original log directory. Their in-memory population or
+program database is rebuilt from the saved sample history before new samples
+are generated. Use the same problem configuration as the original run.
 
 ## Configuration
 

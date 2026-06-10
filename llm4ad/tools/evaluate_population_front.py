@@ -51,6 +51,66 @@ def _nondominated_min(points: np.ndarray) -> np.ndarray:
     return points[keep]
 
 
+def _normalization_bounds(evaluator, objective_num: int) -> tuple[np.ndarray, np.ndarray] | None:
+    ideal = getattr(evaluator, "normalization_ideal", None)
+    nadir = getattr(evaluator, "normalization_nadir", None)
+    if ideal is not None and nadir is not None:
+        ideal = np.asarray(ideal, dtype=float)
+        nadir = np.asarray(nadir, dtype=float)
+        if (
+            ideal.shape == (objective_num,)
+            and nadir.shape == (objective_num,)
+            and np.all(np.isfinite(ideal))
+            and np.all(np.isfinite(nadir))
+            and np.all(nadir > ideal)
+        ):
+            return ideal, nadir
+
+    ref_point = np.asarray(getattr(evaluator, "ref_point", None), dtype=float)
+    if (
+        ref_point.shape == (objective_num,)
+        and np.all(np.isfinite(ref_point))
+        and np.all(ref_point > 0)
+    ):
+        return np.zeros(objective_num, dtype=float), ref_point
+    return None
+
+
+def _normalize_front(front: np.ndarray, ideal: np.ndarray, nadir: np.ndarray) -> np.ndarray:
+    return np.maximum((front - ideal) / (nadir - ideal), 0.0)
+
+
+def _additive_epsilon_to_ideal(front: np.ndarray, ideal: np.ndarray, nadir: np.ndarray) -> float | None:
+    front = _as_points(front)
+    if front.size == 0:
+        return None
+    normalized = _normalize_front(front, ideal, nadir)
+    return float(np.min(np.max(normalized, axis=1)))
+
+
+def _spacing(front: np.ndarray, ideal: np.ndarray, nadir: np.ndarray) -> float | None:
+    front = np.unique(_as_points(front), axis=0)
+    if front.size == 0:
+        return None
+    if len(front) <= 2:
+        return 0.0
+    normalized = _normalize_front(front, ideal, nadir)
+    distances = np.sum(np.abs(normalized[:, None, :] - normalized[None, :, :]), axis=2)
+    np.fill_diagonal(distances, np.inf)
+    nearest = np.min(distances, axis=1)
+    return float(np.sqrt(np.sum((nearest - np.mean(nearest)) ** 2) / (len(nearest) - 1)))
+
+
+def _finite_mean_std(values: list[float | None]) -> tuple[float | None, float | None]:
+    finite = np.asarray(
+        [float(value) for value in values if value is not None and math.isfinite(float(value))],
+        dtype=float,
+    )
+    if finite.size == 0:
+        return None, None
+    return float(np.mean(finite)), float(np.std(finite))
+
+
 def _program_from_record(record: dict[str, Any], evaluator):
     function_text = _function_text(record)
     if function_text is None:
@@ -108,9 +168,13 @@ def _population_front_summary(trace_results: list[dict[str, Any]], evaluator, n_
         return summary
 
     ref_point = np.asarray(getattr(evaluator, "ref_point"), dtype=float)
+    ideal_point = getattr(evaluator, "ideal_point", None)
     hv_indicator = HV(ref_point=ref_point)
+    bounds = _normalization_bounds(evaluator, len(ref_point))
     instance_hvs: list[float] = []
     instance_points: list[int] = []
+    instance_epsilons: list[float | None] = []
+    instance_spacings: list[float | None] = []
 
     for instance_idx in range(n_instance):
         merged = []
@@ -127,27 +191,42 @@ def _population_front_summary(trace_results: list[dict[str, Any]], evaluator, n_
             front = np.empty((0, len(ref_point)), dtype=float)
         if front.size:
             hv_value = hv_indicator(front)
-            scaled_hv = scale_hypervolume(hv_value, ref_point)
+            scaled_hv = scale_hypervolume(hv_value, ref_point, ideal_point)
         else:
             scaled_hv = 0.0
         instance_hvs.append(float(scaled_hv))
         instance_points.append(int(len(front)))
+        if bounds is None:
+            instance_epsilons.append(None)
+            instance_spacings.append(None)
+        else:
+            ideal, nadir = bounds
+            instance_epsilons.append(_additive_epsilon_to_ideal(front, ideal, nadir))
+            instance_spacings.append(_spacing(front, ideal, nadir))
 
     wall_times = [
         float(item.get("wall_time"))
         for item in valid
         if item.get("wall_time") is not None and math.isfinite(float(item.get("wall_time")))
     ]
+    epsilon_mean, epsilon_std = _finite_mean_std(instance_epsilons)
+    spacing_mean, spacing_std = _finite_mean_std(instance_spacings)
     summary.update(
         {
             "population_front_hv": float(np.mean(instance_hvs)),
             "population_front_hv_std": float(np.std(instance_hvs)),
+            "mean_additive_epsilon": epsilon_mean,
+            "additive_epsilon_std": epsilon_std,
+            "mean_spacing": spacing_mean,
+            "spacing_std": spacing_std,
             "mean_population_front_points": float(np.mean(instance_points)),
             "min_population_front_points": int(np.min(instance_points)),
             "max_population_front_points": int(np.max(instance_points)),
             "mean_trace_wall_time": float(np.mean(wall_times)) if wall_times else None,
             "total_trace_wall_time": float(np.sum(wall_times)) if wall_times else None,
             "instance_hv": instance_hvs,
+            "instance_additive_epsilon": instance_epsilons,
+            "instance_spacing": instance_spacings,
             "instance_front_points": instance_points,
         }
     )
@@ -180,6 +259,10 @@ def evaluate_population_front_all_sizes(
         "method": method,
         "problem": problem,
         "metric": "population_front_hv",
+        "front_quality_metrics": {
+            "additive_epsilon": "normalized additive epsilon-to-ideal; lower is better",
+            "spacing": "normalized Manhattan nearest-neighbor spacing; lower is better",
+        },
         "log_dir": str(log_dir),
         "num_records": len(records),
         "num_selected": len(selected_records),
@@ -238,13 +321,16 @@ def write_population_front_report(report: dict[str, Any]) -> None:
         file.write(f"- `eval_seed`: {report['eval_seed']}\n\n")
         file.write(
             "| size | n_instance | valid | population_front_hv | hv_std | "
+            "epsilon_mean | epsilon_std | spacing_mean | spacing_std | "
             "mean_front_points | min_front_points | max_front_points | mean_trace_wall_time |\n"
         )
-        file.write("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
+        file.write("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
         for item in report["sizes"]:
             file.write(
                 "| {problem_size} | {n_instance} | {num_valid}/{num_evaluated} | "
                 "{population_front_hv} | {population_front_hv_std} | "
+                "{mean_additive_epsilon} | {additive_epsilon_std} | "
+                "{mean_spacing} | {spacing_std} | "
                 "{mean_population_front_points} | {min_population_front_points} | "
                 "{max_population_front_points} | {mean_trace_wall_time} |\n".format(
                     problem_size=item.get("problem_size"),
@@ -253,6 +339,10 @@ def write_population_front_report(report: dict[str, Any]) -> None:
                     num_evaluated=item.get("num_evaluated", 0),
                     population_front_hv=_fmt(item.get("population_front_hv")),
                     population_front_hv_std=_fmt(item.get("population_front_hv_std")),
+                    mean_additive_epsilon=_fmt(item.get("mean_additive_epsilon")),
+                    additive_epsilon_std=_fmt(item.get("additive_epsilon_std")),
+                    mean_spacing=_fmt(item.get("mean_spacing")),
+                    spacing_std=_fmt(item.get("spacing_std")),
                     mean_population_front_points=_fmt(item.get("mean_population_front_points")),
                     min_population_front_points=_fmt(item.get("min_population_front_points")),
                     max_population_front_points=_fmt(item.get("max_population_front_points")),
@@ -263,14 +353,15 @@ def write_population_front_report(report: dict[str, Any]) -> None:
 
 def format_population_front_table(reports: list[dict[str, Any]]) -> str:
     rows = [
-        "| method | problem | size | n_instance | valid | population_front_hv | hv_std | mean_front_points | mean_trace_wall_time |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| method | problem | size | n_instance | valid | population_front_hv | hv_std | epsilon_mean | epsilon_std | spacing_mean | spacing_std | mean_front_points | mean_trace_wall_time |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for report in reports:
         for item in report["sizes"]:
             rows.append(
                 "| {method} | {problem} | {problem_size} | {n_instance} | {valid} | "
-                "{hv} | {std} | {points} | {wall} |".format(
+                "{hv} | {std} | {epsilon} | {epsilon_std} | {spacing} | {spacing_std} | "
+                "{points} | {wall} |".format(
                     method=report["method"],
                     problem=report["problem"],
                     problem_size=item.get("problem_size"),
@@ -278,6 +369,10 @@ def format_population_front_table(reports: list[dict[str, Any]]) -> str:
                     valid=f"{item.get('num_valid', 0)}/{item.get('num_evaluated', 0)}",
                     hv=_fmt(item.get("population_front_hv")),
                     std=_fmt(item.get("population_front_hv_std")),
+                    epsilon=_fmt(item.get("mean_additive_epsilon")),
+                    epsilon_std=_fmt(item.get("additive_epsilon_std")),
+                    spacing=_fmt(item.get("mean_spacing")),
+                    spacing_std=_fmt(item.get("spacing_std")),
                     points=_fmt(item.get("mean_population_front_points")),
                     wall=_fmt(item.get("mean_trace_wall_time")),
                 )

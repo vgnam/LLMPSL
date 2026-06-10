@@ -301,7 +301,8 @@ class NSGA2:
     def run(self):
         if not self._resume_mode:
             # do init
-            self._population = Population(pop_size=self._pop_size)
+            if not self._population.population and not self._population._next_gen_pop:
+                self._population = Population(pop_size=self._pop_size)
             self._init_population()
             while len([f for f in self._population if not np.isinf(np.array(f.score)).any()]) < self._selection_num:
                 self._population._generation -= 1

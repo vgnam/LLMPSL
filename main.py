@@ -11,17 +11,17 @@ from llm4ad.tools.llm.llm_api_litellm import HttpsApiLiteLLM
 from llm4ad.tools.llm.llm_api_litellm import HttpsApiLiteLLM4Cluster
 # LLMPFG baseline:
 from llm4ad.method.LLMPFG import MPaGE, EoHProfiler as MPaGEProfiler
-from llm4ad.method.LLMPFG.resume import resume_eoh
+from llm4ad.method.LLMPFG.resume import resume_eoh as resume_llmpfg
 
 # PBC-LLM method:
 from llm4ad.method.PBCLLM import PBCLLM, PBCProfiler, resume_pbcllm
-from llm4ad.method.eoh import EoH, EoHProfiler
-from llm4ad.method.funsearch import FunSearch
+from llm4ad.method.eoh import EoH, EoHProfiler, resume_eoh
+from llm4ad.method.funsearch import FunSearch, resume_funsearch
 from llm4ad.method.funsearch.profiler import FunSearchProfiler
-from llm4ad.method.reevo import ReEvo, ReEvoProfiler
-from llm4ad.method.meoh import MEoH, MEoHProfiler
-from llm4ad.method.nsga2 import NSGA2, NSGA2Profiler
-from llm4ad.method.moead import MOEAD, MOEADProfiler
+from llm4ad.method.reevo import ReEvo, ReEvoProfiler, resume_reevo
+from llm4ad.method.meoh import MEoH, MEoHProfiler, resume_meoh
+from llm4ad.method.nsga2 import NSGA2, NSGA2Profiler, resume_nsga2
+from llm4ad.method.moead import MOEAD, MOEADProfiler, resume_moead
 from llm4ad.task.optimization.registry import PROBLEM_CONFIGS, build_problem
 from llm4ad.tools.evaluate_population_front import (
     evaluate_population_front_all_sizes,
@@ -75,6 +75,17 @@ METHOD_LOG_LABELS = {
 
 SCALAR_HV_BASELINES = {"eoh", "funsearch", "reevo"}
 VECTOR_QT_BASELINES = {"meoh", "nsga2", "moead"}
+RESUME_HANDLERS = {
+    "mpage": lambda method, _: resume_llmpfg(method),
+    "llmpfg": lambda method, _: resume_llmpfg(method),
+    "pbcllm": lambda method, _: resume_pbcllm(method),
+    "eoh": resume_eoh,
+    "funsearch": resume_funsearch,
+    "reevo": resume_reevo,
+    "meoh": resume_meoh,
+    "nsga2": resume_nsga2,
+    "moead": resume_moead,
+}
 
 
 class ScoreProjectionEvaluation:
@@ -98,7 +109,10 @@ class ScoreProjectionEvaluation:
         self.daemon_eval_process = base_evaluation.daemon_eval_process
 
     def __getattr__(self, name):
-        return getattr(self._base_evaluation, name)
+        base_evaluation = self.__dict__.get("_base_evaluation")
+        if base_evaluation is None:
+            raise AttributeError(name)
+        return getattr(base_evaluation, name)
 
     def evaluate_program(self, program_str: str, callable_func: callable):
         score = self._base_evaluation.evaluate_program(program_str, callable_func)
@@ -158,6 +172,7 @@ def build_llms():
         api_key=llm_api_key,
         model=profile["model"],
         timeout=30,
+        temperature=0.7,
     )
     llm_cluster = HttpsApiLiteLLM4Cluster(
         base_url=profile["base_url"],
@@ -194,7 +209,7 @@ def parse_args():
     parser.add_argument(
         "--resume-log-dir",
         default=None,
-        help="Resume MPaGE/LLMPFG/PBCLLM from an existing log directory, or from its run_log.txt file.",
+        help="Resume a supported method from an existing log directory, or from its run_log.txt file.",
     )
     parser.add_argument(
         "--resume-latest",
@@ -275,8 +290,8 @@ def resolve_resume_log_dir(args):
         return None
     if args.method == "both":
         raise ValueError("Resume can be used with one method at a time, not --method both.")
-    if args.method not in {"mpage", "llmpfg", "pbcllm"}:
-        raise ValueError(f"Resume is currently wired only for mpage/llmpfg/pbcllm, not method={args.method!r}.")
+    if args.method not in RESUME_HANDLERS:
+        raise ValueError(f"Resume is not supported for method={args.method!r}.")
 
     log_dir = _latest_resume_log_dir(args.method, args.problem) if args.resume_latest else args.resume_log_dir
     log_dir = os.path.abspath(log_dir)
@@ -390,7 +405,8 @@ def build_method(method_name, llm, llm_cluster, task, args):
                    max_generations=None,
                    pop_size=10,
                    num_samplers=1,
-                   num_evaluators=1)
+                   num_evaluators=1,
+                   max_evaluation_retries=1)
 
     if method_name == "funsearch":
         return FunSearch(llm=llm,
@@ -471,10 +487,7 @@ def main():
         print(f"Using method={method_name}, problem={args.problem}")
         if args.resume_log_dir:
             print(f"Resuming {method_name} from {args.resume_log_dir}")
-            if method_name == "pbcllm":
-                resume_pbcllm(method)
-            else:
-                resume_eoh(method)
+            RESUME_HANDLERS[method_name](method, args.resume_log_dir)
         method.run()
 
         # Report training summary from final population

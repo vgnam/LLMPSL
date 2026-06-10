@@ -104,6 +104,8 @@ class ProfilerBase:
             'score': function.score,
             'program': program,
         }
+        if hasattr(function, 'island_id'):
+            content['island_id'] = function.island_id
 
         if record_type == 'history':
             lower_bound = (sample_order // record_sep) * record_sep

@@ -145,6 +145,16 @@ def _evaluator_hv_ref_point(evaluator, objective_num: int) -> np.ndarray | None:
     return ref_point
 
 
+def _evaluator_hv_ideal_point(evaluator, objective_num: int) -> np.ndarray | None:
+    ideal_point = getattr(evaluator, "ideal_point", None)
+    if ideal_point is None:
+        return None
+    ideal_point = np.asarray(ideal_point, dtype=float)
+    if ideal_point.shape != (objective_num,) or not np.all(np.isfinite(ideal_point)):
+        return None
+    return ideal_point
+
+
 class PBCLLM:
     """Pareto Behavior Coevolution for LLM-generated MOCO heuristics.
 
@@ -203,6 +213,7 @@ class PBCLLM:
             self._objective_num,
         )
         self._hv_ref_point = _evaluator_hv_ref_point(raw_eval, self._objective_num)
+        self._hv_ideal_point = _evaluator_hv_ideal_point(raw_eval, self._objective_num)
         self._rho = float(rho)
         self._template_program_str = evaluation.template_program
         self._task_description_str = evaluation.task_description
@@ -238,6 +249,7 @@ class PBCLLM:
             self._pop_size,
             self._preference_vectors,
             hv_ref_point=self._hv_ref_point,
+            hv_ideal_point=self._hv_ideal_point,
             normalization_ideal=self._normalization_ideal,
             normalization_nadir=self._normalization_nadir,
             rho=self._rho,
@@ -311,6 +323,7 @@ class PBCLLM:
             normalization_ideal=self._normalization_ideal,
             normalization_nadir=self._normalization_nadir,
             hv_ref_point=self._hv_ref_point,
+            hv_ideal_point=self._hv_ideal_point,
         )
         if pbc is None:
             return

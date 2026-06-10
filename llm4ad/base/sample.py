@@ -37,10 +37,18 @@ class LLM:
         """
         return [self.draw_sample(p, *args, **kwargs) for p in prompts]
 
+    def close(self) -> None:
+        """Release provider resources when the implementation owns any."""
+        return None
+
 
 class SampleTrimmer:
     def __init__(self, sampler: LLM):
         self._sampler = sampler
+
+    @property
+    def llm(self) -> LLM:
+        return self._sampler
 
     def draw_sample(self, prompt: str | Any, *args, **kwargs) -> str:
         """Get a sample based on the provided 'Sampler' instance.

@@ -127,6 +127,7 @@ def _rebuild_pbc(func, pbcllm, source: str) -> dict:
         normalization_ideal=pbcllm._normalization_ideal,
         normalization_nadir=pbcllm._normalization_nadir,
         hv_ref_point=pbcllm._hv_ref_point,
+        hv_ideal_point=getattr(pbcllm, "_hv_ideal_point", None),
     )
     if pbc is None:
         raise ValueError(f"Could not rebuild valid PBCLLM behavior state from {source}.")
