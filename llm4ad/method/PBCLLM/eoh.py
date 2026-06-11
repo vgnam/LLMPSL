@@ -23,6 +23,15 @@ DEFAULT_EVALUATION_SEEDS = (2025,)
 _DIRECT_SEEDED_EVALUATION_LOCK = Lock()
 
 
+def _debug_print_block(title: str, value) -> None:
+    print(f"\n===== PBCLLM DEBUG: {title} =====", flush=True)
+    if value is None:
+        print("<None>", flush=True)
+    else:
+        print(value, flush=True)
+    print(f"===== END PBCLLM DEBUG: {title} =====\n", flush=True)
+
+
 def _normalize_evaluation_seeds(evaluation_seeds: Sequence[int] | None) -> tuple[int, ...]:
     seeds = DEFAULT_EVALUATION_SEEDS if evaluation_seeds is None else evaluation_seeds
     normalized = []
@@ -187,6 +196,7 @@ class PBCLLM:
         parent_selection_strategy: str = "complementary_behavior",
         rho: float = 0.05,
         debug_mode: bool = False,
+        debug_output: bool = False,
         llm_review: bool = False,
         multi_thread_or_process_eval: str = "process",
         max_consecutive_sampling_errors: int = 5,
@@ -231,6 +241,7 @@ class PBCLLM:
         self._num_evaluators = int(num_evaluators)
         self._isolate_seed_evaluator = multi_thread_or_process_eval == "thread"
         self._debug_mode = debug_mode
+        self._debug_output = bool(debug_output)
         self._llm_review = bool(llm_review)
         self._tot_sample_nums = 0
         self._max_consecutive_sampling_errors = int(max_consecutive_sampling_errors)
@@ -302,11 +313,25 @@ class PBCLLM:
         sample_start = time.time()
         thought, func = self._sampler.get_thought_and_function(prompt)
         sample_time = time.time() - sample_start
+        if self._debug_output:
+            _debug_print_block("LLM RAW RESPONSE", self._sampler.last_response)
+            _debug_print_block("EXTRACTED THOUGHT", thought)
+            _debug_print_block("EXTRACTED FUNCTION BODY", self._sampler.last_extracted_code)
+            _debug_print_block("EXTRACTED FUNCTION", func)
         if thought is None or func is None:
+            if self._debug_output:
+                _debug_print_block(
+                    "SAMPLE DROPPED",
+                    f"thought is None: {thought is None}\nfunc is None: {func is None}",
+                )
             return
 
         program = TextFunctionProgramConverter.function_to_program(func, self._template_program)
+        if self._debug_output:
+            _debug_print_block("RECONSTRUCTED PROGRAM", program)
         if program is None:
+            if self._debug_output:
+                _debug_print_block("SAMPLE DROPPED", "program is None")
             return
 
         try:
@@ -325,10 +350,20 @@ class PBCLLM:
             hv_ref_point=self._hv_ref_point,
             hv_ideal_point=self._hv_ideal_point,
         )
+        if self._debug_output:
+            _debug_print_block("RAW EVALUATION RESULT", result)
+            _debug_print_block("ANALYZED PBC", pbc)
         if pbc is None:
+            if self._debug_output:
+                _debug_print_block("SAMPLE DROPPED", "pbc is None")
             return
         expected_front_count = sum(result.get("instances_per_seed", []))
         if pbc.get("front_count") != expected_front_count:
+            if self._debug_output:
+                _debug_print_block(
+                    "SAMPLE DROPPED",
+                    f"front_count={pbc.get('front_count')} expected_front_count={expected_front_count}",
+                )
             return
 
         func.score = [-pbc["individual_hv"], pbc["coverage_loss"]]
@@ -418,7 +453,16 @@ class PBCLLM:
                 self._function_to_evolve,
             )
             group = self._cluster_sampler.get_thought(prompt_cluster)
+            if self._debug_output:
+                _debug_print_block("CLUSTER PROMPT", prompt_cluster)
+                _debug_print_block("CLUSTER RAW RESPONSE", self._cluster_sampler.last_response)
+                _debug_print_block("CLUSTER PARSED GROUP INPUT", group)
             clustered = self._select_clustered_parents(group, parents)
+            if self._debug_output:
+                _debug_print_block(
+                    "CLUSTER SELECTED PARENTS",
+                    "\n".join(str(parent) for parent in clustered) if clustered else None,
+                )
             return clustered if clustered else parents
         except Exception:
             if self._debug_mode:

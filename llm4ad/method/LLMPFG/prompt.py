@@ -7,6 +7,23 @@ from ...base import *
 
 
 class EoHPrompt:
+    _STRICT_ALGORITHM_FUNCTION_FORMAT = '''Return exactly two parts in this order:
+1. One single-line algorithm description before the function.
+The first character of the answer must be the literal character { and that first line must end with the literal character }.
+Valid first-line example:
+{Select a promising archive solution and apply a capacity-aware randomized neighborhood move to generate a feasible neighbor.}
+2. The Python function definition.
+Invalid first-line example because it has no braces:
+Select a promising archive solution and apply a capacity-aware randomized neighborhood move to generate a feasible neighbor.
+Do not put the braced algorithm description inside the function body, docstring, comments, or markdown code fences.
+Do not wrap the answer in ```python or any other markdown fence.
+Do not output imports, explanations, or text outside these two parts.'''
+
+    _STRICT_CLUSTER_FORMAT = '''Return only valid JSON in this exact shape:
+{"Group": [[0, 2], [1, 4], [3]]}
+Do not wrap the JSON in markdown fences.
+Do not return a bare list.'''
+
     @classmethod
     def create_instruct_prompt(cls, prompt: str) -> List[Dict]:
         content = [
@@ -26,8 +43,9 @@ class EoHPrompt:
         temp_func.body = ''
         # create prompt content
         prompt_content = f'''{task_prompt}
-1. First, describe your new algorithm and main steps in one long, detail sentence. The description must be inside within boxed {{}}. 
-2. Next, implement the following Python function:
+{cls._STRICT_ALGORITHM_FUNCTION_FORMAT}
+
+Implement the following Python function:
 {str(temp_func)} \n
 Check syntax, code carefully before returning the final function. Do not give additional explanations.'''
         return prompt_content
@@ -83,8 +101,9 @@ I have {len(indivs)} existing algorithms with their codes as follows:
 
 Analyze the logic of all the given code snippets carefully. Then identify the two code snippets whose logic is most different from each other
 and create a new algorithm that totally different in logic and form from both of them.
-1. First, describe your new algorithm and main steps in one long, detail sentence. The description must be inside within boxed {{}}.
-2. Next, implement the following Python function:
+{cls._STRICT_ALGORITHM_FUNCTION_FORMAT}
+
+Implement the following Python function:
 {str(temp_func)}
 Check syntax, code carefully before returning the final function. Do not give additional explanations.'''
         else:
@@ -94,8 +113,9 @@ Check syntax, code carefully before returning the final function. Do not give ad
 Suggestions:\n + {suggestions} + \n
 ---\n\n 
 Please help me create a new algorithm based on the above suggestions. 
-1. First, describe your new algorithm and main steps in one long, detail sentence. The description must be inside within boxed {{}}.
-2. Next, implement the following Python function:
+{cls._STRICT_ALGORITHM_FUNCTION_FORMAT}
+
+Implement the following Python function:
 {str(temp_func)}
 Check syntax, code carefully before returning the final function. Do not give additional explanations.'''
         return prompt_content
@@ -122,12 +142,7 @@ Group them into clusters, where:
 - Return a JSON with a key "Group", whose value is a list of sublists.
 - Each sublist contains the code indices (starting from 0) that belong to that cluster.
 
-Return format example:
-  "Group": [
-    [0, 2],
-    [1, 4],
-    [3]
-  ]
+{cls._STRICT_CLUSTER_FORMAT}
   """
         return prompt_content
 
@@ -152,9 +167,10 @@ Return format example:
 Suggestions:\n + {suggestions} + \n
 ---\n\n 
 Please help me create a new algorithm based on the above suggestions.
-1. Firstly, identify the common backbone idea in the provided algorithms. 
-2. Secondly, based on the backbone idea describe your new algorithm. The description must be inside within boxed {{}}.
-3. Thirdly, implement the following Python function:
+Identify the common backbone idea internally, but do not output it separately.
+{cls._STRICT_ALGORITHM_FUNCTION_FORMAT}
+
+Implement the following Python function:
 {str(temp_func)}
 Check syntax, code carefully before returning the final function. Do not give additional explanations.'''
         else:
@@ -162,9 +178,10 @@ Check syntax, code carefully before returning the final function. Do not give ad
 I have {len(indivs)} existing algorithms with their codes as follows:
 {indivs_prompt}
 Please help me create a new algorithm that has a totally different form from the given ones but can be motivated from them.
-1. Firstly, identify the common backbone idea in the provided algorithms. 
-2. Secondly, based on the backbone idea describe your new algorithm in one long, detail sentence. The description must be inside within boxed {{}}.
-3. Thirdly, implement the following Python function:
+Identify the common backbone idea internally, but do not output it separately.
+{cls._STRICT_ALGORITHM_FUNCTION_FORMAT}
+
+Implement the following Python function:
 {str(temp_func)}
 Check syntax, code carefully before returning the final function. Do not give additional explanations.'''
         return prompt_content
@@ -183,8 +200,9 @@ I have one algorithm with its code as follows. Algorithm description:
 Code:
 {str(indi)}
 Please assist me in creating a new algorithm that has a different form but can be a modified version of the algorithm provided. You may focus on refining either the selection phase or the neighborhood search phase.
-1. First, describe your new algorithm and main steps in one long, detail sentence. The description must be inside within boxed {{}}.
-2. Next, implement the following Python function:
+{cls._STRICT_ALGORITHM_FUNCTION_FORMAT}
+
+Implement the following Python function:
 {str(temp_func)}
 Check syntax, code carefully before returning the final function. Do not give additional explanations.'''
         return prompt_content
@@ -202,8 +220,10 @@ I have one algorithm with its code as follows. Algorithm description:
 Code:
 {str(indi)}
 Please identify the main algorithm parameters and assist me in creating a new algorithm that has a different parameter settings of the score function provided. You may focus on refining either the selection phase or the neighborhood search phase
-1. First, describe your new algorithm and main steps  in one long, detail sentence. The description must be inside within boxed {{}}.
-2. Next, implement the following Python function:
+Identify the main algorithm parameters internally, but do not output them separately.
+{cls._STRICT_ALGORITHM_FUNCTION_FORMAT}
+
+Implement the following Python function:
 {str(temp_func)}
 Check syntax, code carefully before returning the final function. Do not give additional explanations.'''
         return prompt_content

@@ -254,6 +254,14 @@ def parse_args():
             "best-HV/contribution/diversity roles."
         ),
     )
+    parser.add_argument(
+        "--pbcllm-debug-output",
+        action="store_true",
+        help=(
+            "Print PBCLLM raw LLM responses, extracted thoughts, extracted functions, "
+            "reconstructed programs, evaluation results, and PBC analysis."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -397,6 +405,7 @@ def build_method(method_name, llm, llm_cluster, task, args):
                       cluster_distance=0.35,
                       elites_per_preference=2,
                       parent_selection_strategy=args.pbcllm_parent_selection,
+                      debug_output=args.pbcllm_debug_output,
                     )
 
     max_samples = args.max_sample_nums if args.max_sample_nums is not None else 200

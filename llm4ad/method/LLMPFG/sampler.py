@@ -12,10 +12,16 @@ class EoHSampler:
         self._sampler = sampler
         self._template_program = template_program
         self.last_response = None
+        self.last_thought = None
+        self.last_extracted_code = None
+        self.last_function = None
 
     def get_thought(self, prompt: str):
         response = self._sampler.draw_sample(prompt)
         self.last_response = response
+        self.last_thought = response
+        self.last_extracted_code = None
+        self.last_function = None
         return response
 
     def get_thought_and_function(self, prompt: str) -> Tuple[str, Function]:
@@ -24,6 +30,9 @@ class EoHSampler:
         thought = self.__class__.trim_thought_from_response(response)
         code = SampleTrimmer.trim_preface_of_function(response)
         function = SampleTrimmer.sample_to_function(code, self._template_program)
+        self.last_thought = thought
+        self.last_extracted_code = code
+        self.last_function = function
         return thought, function
 
     @classmethod
