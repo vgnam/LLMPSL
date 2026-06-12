@@ -143,14 +143,18 @@ class ReEvo:
         func.score = score
         func.evaluate_time = eval_time
         func.sample_time = sample_time
+        func.algorithm = getattr(func, 'algorithm', None) or '{Generated heuristic.}'
+        self._tot_sample_nums += 1
+
+        # Update the population before checkpointing so the saved generation
+        # contains the function that triggered it.
+        if score is not None:
+            self._population.register_function(func)
+
         if self._profiler is not None:
             self._profiler.register_function(func, program=str(program))
             if isinstance(self._profiler, ReEvoProfiler):
                 self._profiler.register_population(self._population)
-        self._tot_sample_nums += 1
-
-        # register to the population
-        self._population.register_function(func)
 
     def _iteratively_ga_evolve(self):
         short_term_reflection_prompts = []
@@ -247,7 +251,9 @@ class ReEvo:
         """Let a thread repeat {sample -> evaluate -> register to population}
         to initialize a population.
         """
-        while self._population.generation == 0:
+        while (
+                self._population.generation == 0
+                and self._tot_sample_nums < self._max_sample_nums):
             try:
                 # get a new func using i1
                 prompt = ReEvoPrompt.get_pop_init_prompt(self._task_description_str, self._function_to_evolve)

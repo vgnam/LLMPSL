@@ -11,7 +11,7 @@ import numpy as np
 from pymoo.indicators.hv import HV
 
 from llm4ad.base import SecureEvaluator, TextFunctionProgramConverter
-from llm4ad.task.optimization.hv_utils import scale_hypervolume
+from llm4ad.task.optimization.hv_utils import reference_hypervolume_scale, scale_hypervolume
 from llm4ad.task.optimization.registry import PROBLEM_CONFIGS, build_problem, normalize_problem_name
 from llm4ad.tools.evaluate_all_sizes import (
     _fmt,
@@ -169,6 +169,13 @@ def _population_front_summary(trace_results: list[dict[str, Any]], evaluator, n_
 
     ref_point = np.asarray(getattr(evaluator, "ref_point"), dtype=float)
     ideal_point = getattr(evaluator, "ideal_point", None)
+    summary.update(
+        {
+            "hv_reference_point": ref_point.tolist(),
+            "hv_ideal_point": None if ideal_point is None else np.asarray(ideal_point, dtype=float).tolist(),
+            "hv_normalization_area": reference_hypervolume_scale(ref_point, ideal_point),
+        }
+    )
     hv_indicator = HV(ref_point=ref_point)
     bounds = _normalization_bounds(evaluator, len(ref_point))
     instance_hvs: list[float] = []
@@ -289,6 +296,10 @@ def evaluate_population_front_all_sizes(
             eval_seed=eval_seed,
             timeout_seconds=timeout_seconds,
         )
+        for key in ("hv_normalization_policy", "hv_fixed_ideal_magnitude_by_size"):
+            value = getattr(evaluator, key, None)
+            if value is not None:
+                report[key] = value
         setattr(evaluator, "return_mo_trace", True)
         # The population-front metric needs the full trace object. In this
         # Windows workspace, spawning a safe subprocess can fail with
@@ -325,7 +336,15 @@ def write_population_front_report(report: dict[str, Any]) -> None:
         file.write(f"# Population-Front Evaluation: {report['method']} / {problem}\n\n")
         file.write(f"- `log_dir`: {report['log_dir']}\n")
         file.write(f"- `num_selected`: {report['num_selected']}\n")
-        file.write(f"- `eval_seed`: {report['eval_seed']}\n\n")
+        file.write(f"- `eval_seed`: {report['eval_seed']}\n")
+        if report.get("hv_normalization_policy") is not None:
+            file.write(f"- `hv_normalization_policy`: {report['hv_normalization_policy']}\n")
+        if report.get("hv_fixed_ideal_magnitude_by_size") is not None:
+            file.write(
+                f"- `hv_fixed_ideal_magnitude_by_size`: "
+                f"{report['hv_fixed_ideal_magnitude_by_size']}\n"
+            )
+        file.write("\n")
         file.write(
             "| size | n_instance | valid | population_front_hv | hv_std | "
             "epsilon_mean | epsilon_std | spacing_mean | spacing_std | "

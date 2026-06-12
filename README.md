@@ -66,6 +66,25 @@ role policy for ablation:
 python main.py --method pbcllm --pbcllm-parent-selection legacy_role
 ```
 
+PBCLLM ablations are selected with `--pbcllm-ablation`. Each option changes only
+the named component; `none` runs the full method:
+
+```bash
+python main.py --method pbcllm --problem bi_kp --pbcllm-ablation only_hv_contribution
+python main.py --method pbcllm --problem bi_kp --pbcllm-ablation only_behavior_diversity
+python main.py --method pbcllm --problem bi_kp --pbcllm-ablation euclidean_instead_of_dtw
+python main.py --method pbcllm --problem bi_kp --pbcllm-ablation no_weak_anchor
+python main.py --method pbcllm --problem bi_kp --pbcllm-ablation no_hv_complement
+python main.py --method pbcllm --problem bi_kp --pbcllm-ablation no_behavior_complement
+```
+
+The three parent-role ablations pass the remaining two parents directly to
+crossover, so semantic clustering is skipped for those variants.
+
+PBCLLM accepts valid generated code even when the LLM omits the boxed algorithm
+description or writes it across multiple lines. Rejected generations are logged
+with a reason so parse, evaluation, and PBC/front failures can be diagnosed.
+
 To continue a run from its original log directory, set the new total sample
 budget higher than the saved sample count:
 

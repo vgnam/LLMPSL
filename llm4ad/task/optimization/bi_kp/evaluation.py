@@ -10,7 +10,17 @@ from pymoo.indicators.hv import HV
 import random
 import time
 
-__all__ = ['BIKPEvaluation']
+__all__ = ['BIKPEvaluation', 'fixed_ideal_point']
+
+FIXED_IDEAL_MAGNITUDE_BY_SIZE = {
+    20: 11.0,
+    50: 25.0,
+    100: 48.0,
+    150: 60.0,
+    200: 70.0,
+    300: 115.0,
+    400: 135.0,
+}
 
 
 def knapsack_value(solution: np.ndarray, weight_lst: np.ndarray, value1_lst: np.ndarray, value2_lst: np.ndarray, capacity: float):
@@ -68,6 +78,12 @@ def estimate_reference_point(instance_data, capacity, problem_size, samples_per_
     nadir = np.max(arr, axis=0)
     span = np.maximum(np.max(arr, axis=0) - np.min(arr, axis=0), 1e-6)
     return nadir + margin * span
+
+
+def fixed_ideal_point(problem_size, objective_num=2):
+    """Return the method- and run-independent BI-KP normalization ideal."""
+    magnitude = FIXED_IDEAL_MAGNITUDE_BY_SIZE.get(problem_size, float(problem_size))
+    return np.full(objective_num, -magnitude, dtype=float)
 
 
 
@@ -182,7 +198,9 @@ class BIKPEvaluation(Evaluation):
         getData = GetData(self.n_instance, self.problem_size, seed=seed, data_dir=data_dir)
         self._datasets, self.cap = getData.generate_instances() 
         self.ref_point = estimate_reference_point(self._datasets, self.cap, self.problem_size) 
-        self.ideal_point = np.full(self.objective_num, -float(self.problem_size))
+        self.ideal_point = fixed_ideal_point(self.problem_size, self.objective_num)
+        self.hv_normalization_policy = "fixed_by_problem_size"
+        self.hv_fixed_ideal_magnitude_by_size = FIXED_IDEAL_MAGNITUDE_BY_SIZE.copy()
         self.normalization_ideal = self.ideal_point.copy()
         self.normalization_nadir = self.ref_point.copy()
 

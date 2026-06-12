@@ -30,6 +30,8 @@ def _old_record(index: int) -> dict:
 class _FakePBCLLM(SimpleNamespace):
     def _evaluate_program_across_seeds(self, program):
         self.evaluation_count += 1
+        if self.evaluation_count in self.invalid_evaluation_calls:
+            return None, 1.0
         value = float(self.evaluation_count)
         return {
             "objective_num": 2,
@@ -68,6 +70,7 @@ class PBCLLMResumeTests(unittest.TestCase):
             _max_sample_nums=5,
             _tot_sample_nums=0,
             evaluation_count=0,
+            invalid_evaluation_calls=set(),
         )
 
     def test_resume_rebuilds_initial_log_and_keeps_using_same_directory(self):
@@ -135,6 +138,31 @@ class PBCLLMResumeTests(unittest.TestCase):
 
             self.assertEqual(method.evaluation_count, 2)
             self.assertEqual(method._tot_sample_nums, 2)
+
+    def test_resume_skips_checkpoint_function_that_no_longer_evaluates(self):
+        with tempfile.TemporaryDirectory() as log_dir:
+            os.makedirs(os.path.join(log_dir, "population"))
+            os.makedirs(os.path.join(log_dir, "samples"))
+            records = [_old_record(1), _old_record(2)]
+            with open(os.path.join(log_dir, "population", "pop_1.json"), "w", encoding="utf-8") as file:
+                json.dump(records, file)
+            with open(os.path.join(log_dir, "samples", "samples_0~200.json"), "w", encoding="utf-8") as file:
+                json.dump(
+                    [
+                        {"sample_order": index, **record}
+                        for index, record in enumerate(records, start=1)
+                    ],
+                    file,
+                )
+
+            method = self._method(log_dir)
+            method.invalid_evaluation_calls = {1}
+            resume_pbcllm(method)
+
+            self.assertEqual(method._population.generation, 1)
+            self.assertEqual(len(method._population.population), 1)
+            self.assertEqual(method._tot_sample_nums, 2)
+            self.assertEqual(method.evaluation_count, 2)
 
     def test_legacy_full_checkpoint_resumes_without_re_evaluation(self):
         with tempfile.TemporaryDirectory() as log_dir:

@@ -7,6 +7,9 @@ import numpy as np
 
 from llm4ad.base import Function
 from llm4ad.method.PBCLLM.population import (
+    PARENT_ROLE_BEHAVIOR_COMPLEMENT,
+    PARENT_ROLE_HV_COMPLEMENT,
+    PARENT_ROLE_WEAK_ANCHOR,
     Population,
     default_preference_vectors,
 )
@@ -49,7 +52,7 @@ def _function(
 
 
 class PBCLLMParentSelectionTests(unittest.TestCase):
-    def _population(self) -> tuple[Population, dict[str, Function]]:
+    def _population(self, *, excluded_parent_role: str | None = None) -> tuple[Population, dict[str, Function]]:
         pop = Population(
             4,
             default_preference_vectors(2),
@@ -57,6 +60,7 @@ class PBCLLMParentSelectionTests(unittest.TestCase):
             normalization_ideal=np.array([0.0, 0.0]),
             normalization_nadir=np.array([10.0, 10.0]),
             parent_selection_strategy="complementary_behavior",
+            excluded_parent_role=excluded_parent_role,
         )
         funcs = {
             "high_individual_hv": _function(
@@ -112,6 +116,43 @@ class PBCLLMParentSelectionTests(unittest.TestCase):
         self.assertEqual(parents[2].pbc["parent_selection_role"], "behavior_complement")
         self.assertGreater(parents[1].pbc["parent_selection_hv_delta"], 0.0)
         self.assertGreater(parents[2].pbc["parent_selection_min_behavior_distance"], 0.0)
+
+    def test_no_weak_anchor_returns_only_hv_and_behavior_complements(self):
+        pop, _ = self._population(excluded_parent_role=PARENT_ROLE_WEAK_ANCHOR)
+
+        parents = pop.select_parents(target_preference=0, selection_num=3)
+
+        self.assertEqual(
+            [parent.pbc["parent_selection_role"] for parent in parents],
+            [PARENT_ROLE_HV_COMPLEMENT, PARENT_ROLE_BEHAVIOR_COMPLEMENT],
+        )
+
+    def test_no_hv_complement_returns_only_weak_anchor_and_behavior_complement(self):
+        pop, _ = self._population(excluded_parent_role=PARENT_ROLE_HV_COMPLEMENT)
+
+        parents = pop.select_parents(target_preference=0, selection_num=3)
+
+        self.assertEqual(
+            [parent.pbc["parent_selection_role"] for parent in parents],
+            [PARENT_ROLE_WEAK_ANCHOR, PARENT_ROLE_BEHAVIOR_COMPLEMENT],
+        )
+
+    def test_no_behavior_complement_returns_only_weak_anchor_and_hv_complement(self):
+        pop, _ = self._population(excluded_parent_role=PARENT_ROLE_BEHAVIOR_COMPLEMENT)
+
+        parents = pop.select_parents(target_preference=0, selection_num=3)
+
+        self.assertEqual(
+            [parent.pbc["parent_selection_role"] for parent in parents],
+            [PARENT_ROLE_WEAK_ANCHOR, PARENT_ROLE_HV_COMPLEMENT],
+        )
+
+    def test_parent_ablation_does_not_remove_mutation_parent(self):
+        pop, funcs = self._population(excluded_parent_role=PARENT_ROLE_WEAK_ANCHOR)
+
+        parents = pop.select_parents(target_preference=0, selection_num=1)
+
+        self.assertEqual(parents, [funcs["weak_region_anchor"]])
 
     def test_pbcllm_prompt_matches_llmpfg_prompt(self):
         pop, _ = self._population()

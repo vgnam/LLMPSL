@@ -50,7 +50,7 @@ class ReEvoProfiler(ProfilerBase):
             funcs_json = []  # type: List[Dict]
             for f in funcs:
                 f_json = {
-                    'algorithm': f.algorithm,
+                    'algorithm': getattr(f, 'algorithm', None),
                     'function': str(f),
                     'score': f.score
                 }
@@ -58,7 +58,7 @@ class ReEvoProfiler(ProfilerBase):
             path = os.path.join(self._ckpt_dir, f'pop_{pop.generation}.json')
             with open(path, 'w') as json_file:
                 json.dump(funcs_json, json_file, indent=4)
-            self._cur_gen += 1
+            self._cur_gen = pop.generation
         finally:
             if self._pop_lock.locked():
                 self._pop_lock.release()
@@ -78,7 +78,7 @@ class ReEvoProfiler(ProfilerBase):
         sample_order = self._num_samples
         content = {
             'sample_order': sample_order,
-            'algorithm': function.algorithm,  # Added when recording
+            'algorithm': getattr(function, 'algorithm', None),
             'function': str(function),
             'score': function.score,
             'program': program,

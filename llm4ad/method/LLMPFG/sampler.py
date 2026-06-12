@@ -36,10 +36,16 @@ class EoHSampler:
         return thought, function
 
     @classmethod
-    def trim_thought_from_response(cls, response: str) -> str | None:
-        try:
-            pattern = r'\{.*?\}'  # Compared with r'\{(.*)\}'
-            bracketed_texts = re.findall(pattern, response)
-            return bracketed_texts[0]
-        except:
-            return None
+    def trim_thought_from_response(cls, response: str) -> str:
+        if not isinstance(response, str):
+            return "{Generated heuristic.}"
+
+        match = re.search(r'\{.*?\}', response, flags=re.DOTALL)
+        if match:
+            return match.group(0)
+
+        preface = response.split("def ", 1)[0]
+        preface = re.sub(r"```(?:python)?", "", preface, flags=re.IGNORECASE).strip()
+        if preface:
+            return "{" + " ".join(preface.split()) + "}"
+        return "{Generated heuristic.}"

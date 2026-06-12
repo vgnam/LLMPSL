@@ -18,6 +18,28 @@ PARENT_SELECTION_STRATEGIES = (
     PARENT_SELECTION_COMPLEMENTARY_BEHAVIOR,
     PARENT_SELECTION_LEGACY_ROLE,
 )
+SURVIVOR_SELECTION_CONTRIBUTION_BEHAVIOR = "contribution_behavior"
+SURVIVOR_SELECTION_HV_ONLY = "hv_only"
+SURVIVOR_SELECTION_BEHAVIOR_ONLY = "behavior_only"
+SURVIVOR_SELECTION_STRATEGIES = (
+    SURVIVOR_SELECTION_CONTRIBUTION_BEHAVIOR,
+    SURVIVOR_SELECTION_HV_ONLY,
+    SURVIVOR_SELECTION_BEHAVIOR_ONLY,
+)
+BEHAVIOR_DISTANCE_DTW = "dtw"
+BEHAVIOR_DISTANCE_EUCLIDEAN = "euclidean"
+BEHAVIOR_DISTANCE_METRICS = (
+    BEHAVIOR_DISTANCE_DTW,
+    BEHAVIOR_DISTANCE_EUCLIDEAN,
+)
+PARENT_ROLE_WEAK_ANCHOR = "weak_preference_anchor"
+PARENT_ROLE_HV_COMPLEMENT = "hv_complement"
+PARENT_ROLE_BEHAVIOR_COMPLEMENT = "behavior_complement"
+EXCLUDABLE_PARENT_ROLES = (
+    PARENT_ROLE_WEAK_ANCHOR,
+    PARENT_ROLE_HV_COMPLEMENT,
+    PARENT_ROLE_BEHAVIOR_COMPLEMENT,
+)
 
 
 def default_preference_vectors(objective_num: int) -> np.ndarray:
@@ -274,7 +296,15 @@ def dtw_distance(a: Sequence[Sequence[float]], b: Sequence[Sequence[float]]) -> 
     return float(dp[n, m] / (n + m))
 
 
-def behavior_distance(a: Function, b: Function) -> float:
+def euclidean_trajectory_distance(a: Sequence[Sequence[float]], b: Sequence[Sequence[float]]) -> float:
+    aa = np.asarray(a, dtype=float)
+    bb = np.asarray(b, dtype=float)
+    if aa.ndim != 2 or bb.ndim != 2 or aa.shape != bb.shape or len(aa) == 0:
+        return 1e6
+    return float(np.mean(np.linalg.norm(aa - bb, axis=1)))
+
+
+def behavior_distance(a: Function, b: Function, metric: str = BEHAVIOR_DISTANCE_DTW) -> float:
     pbc_a = getattr(a, "pbc", None) or {}
     pbc_b = getattr(b, "pbc", None) or {}
     traj_a = pbc_a.get("pbt") or []
@@ -284,14 +314,26 @@ def behavior_distance(a: Function, b: Function) -> float:
     count = min(len(traj_a), len(traj_b))
     if count == 0:
         return 1e6
-    return float(np.mean([dtw_distance(traj_a[i], traj_b[i]) for i in range(count)]))
+    if metric == BEHAVIOR_DISTANCE_DTW:
+        distance = dtw_distance
+    elif metric == BEHAVIOR_DISTANCE_EUCLIDEAN:
+        distance = euclidean_trajectory_distance
+    else:
+        choices = ", ".join(BEHAVIOR_DISTANCE_METRICS)
+        raise ValueError(f"Unknown PBCLLM behavior distance metric={metric!r}; choose one of: {choices}.")
+    return float(np.mean([distance(traj_a[i], traj_b[i]) for i in range(count)]))
 
 
-def behavior_novelty(func: Function, population: Sequence[Function], k: int = 3) -> float:
+def behavior_novelty(
+    func: Function,
+    population: Sequence[Function],
+    k: int = 3,
+    metric: str = BEHAVIOR_DISTANCE_DTW,
+) -> float:
     others = [g for g in population if g is not func and getattr(g, "pbc", None)]
     if not others:
         return 1.0
-    distances = sorted(behavior_distance(func, other) for other in others)
+    distances = sorted(behavior_distance(func, other, metric=metric) for other in others)
     return float(np.mean(distances[: max(1, min(k, len(distances)))]))
 
 
@@ -371,10 +413,24 @@ class Population:
         cluster_distance: float = 0.35,
         elites_per_preference: int = 2,
         parent_selection_strategy: str = PARENT_SELECTION_COMPLEMENTARY_BEHAVIOR,
+        survivor_selection_strategy: str = SURVIVOR_SELECTION_CONTRIBUTION_BEHAVIOR,
+        behavior_distance_metric: str = BEHAVIOR_DISTANCE_DTW,
+        excluded_parent_role: str | None = None,
     ):
         if parent_selection_strategy not in PARENT_SELECTION_STRATEGIES:
             choices = ", ".join(PARENT_SELECTION_STRATEGIES)
             raise ValueError(f"Unknown PBCLLM parent_selection_strategy={parent_selection_strategy!r}; choose one of: {choices}.")
+        if survivor_selection_strategy not in SURVIVOR_SELECTION_STRATEGIES:
+            choices = ", ".join(SURVIVOR_SELECTION_STRATEGIES)
+            raise ValueError(f"Unknown PBCLLM survivor selection strategy={survivor_selection_strategy!r}; choose one of: {choices}.")
+        if behavior_distance_metric not in BEHAVIOR_DISTANCE_METRICS:
+            choices = ", ".join(BEHAVIOR_DISTANCE_METRICS)
+            raise ValueError(f"Unknown PBCLLM behavior distance metric={behavior_distance_metric!r}; choose one of: {choices}.")
+        if excluded_parent_role is not None and excluded_parent_role not in EXCLUDABLE_PARENT_ROLES:
+            choices = ", ".join(EXCLUDABLE_PARENT_ROLES)
+            raise ValueError(f"Unknown PBCLLM excluded parent role={excluded_parent_role!r}; choose one of: {choices}.")
+        if excluded_parent_role is not None and parent_selection_strategy != PARENT_SELECTION_COMPLEMENTARY_BEHAVIOR:
+            raise ValueError("PBCLLM parent-role ablations require parent_selection_strategy='complementary_behavior'.")
         self._population: list[Function] = []
         self._pop_size = int(pop_size)
         self._preference_vectors = np.asarray(preference_vectors, dtype=float)
@@ -387,6 +443,9 @@ class Population:
         self._cluster_distance = float(cluster_distance)
         self._elites_per_preference = int(elites_per_preference)
         self._parent_selection_strategy = parent_selection_strategy
+        self._survivor_selection_strategy = survivor_selection_strategy
+        self._behavior_distance_metric = behavior_distance_metric
+        self._excluded_parent_role = excluded_parent_role
         self._population_hv = 0.0
         self._generation = 0
         self._next_gen_pop: list[Function] = []
@@ -420,8 +479,14 @@ class Population:
 
     def _refresh_behavior_novelty(self):
         for func in self._population:
-            novelty = behavior_novelty(func, self._population)
+            novelty = self._behavior_novelty(func, self._population)
             func.pbc["behavior_novelty"] = novelty
+
+    def _behavior_distance(self, a: Function, b: Function) -> float:
+        return behavior_distance(a, b, metric=self._behavior_distance_metric)
+
+    def _behavior_novelty(self, func: Function, population: Sequence[Function], k: int = 3) -> float:
+        return behavior_novelty(func, population, k=k, metric=self._behavior_distance_metric)
 
     @staticmethod
     def _sp(func: Function) -> np.ndarray:
@@ -512,7 +577,7 @@ class Population:
                 0.0,
                 pool_hv - population_front_hv(without, self._hv_ref_point, self._hv_ideal_point),
             )
-            diversity = behavior_novelty(func, pool)
+            diversity = self._behavior_novelty(func, pool)
             pbc["selection_population_hv"] = pool_hv
             pbc["selection_hv_gain"] = contribution
             pbc["population_hv_contribution"] = contribution
@@ -521,15 +586,26 @@ class Population:
             pbc["coverage_loss"] = self._coverage_loss(func)
             func.pbc = pbc
 
-    def _selection_objectives(self, func: Function) -> tuple[float, float]:
+    def _selection_objectives(self, func: Function) -> tuple[float, ...]:
         pbc = getattr(func, "pbc", None) or {}
-        return (
-            float(pbc.get("selection_hv_gain", pbc.get("population_hv_contribution", 0.0))),
-            float(pbc.get("behavior_diversity", pbc.get("behavior_novelty", 0.0))),
-        )
+        contribution = float(pbc.get("selection_hv_gain", pbc.get("population_hv_contribution", 0.0)))
+        diversity = float(pbc.get("behavior_diversity", pbc.get("behavior_novelty", 0.0)))
+        if self._survivor_selection_strategy == SURVIVOR_SELECTION_HV_ONLY:
+            return (contribution,)
+        if self._survivor_selection_strategy == SURVIVOR_SELECTION_BEHAVIOR_ONLY:
+            return (diversity,)
+        return contribution, diversity
 
     def _select_by_contribution_diversity(self, pool: Sequence[Function]) -> list[Function]:
         self._annotate_pool_metrics(pool)
+        if self._survivor_selection_strategy != SURVIVOR_SELECTION_CONTRIBUTION_BEHAVIOR:
+            ranked = list(pool)
+            random.shuffle(ranked)
+            return sorted(
+                ranked,
+                key=lambda func: self._selection_objectives(func)[0],
+                reverse=True,
+            )[:self._pop_size]
         fronts = _fast_non_dominated_sort_max(pool, self._selection_objectives)
         selected: list[Function] = []
         for front in fronts:
@@ -567,7 +643,7 @@ class Population:
                 self._population_hv
                 - population_front_hv(without, self._hv_ref_point, self._hv_ideal_point),
             )
-            diversity = behavior_novelty(func, self._population)
+            diversity = self._behavior_novelty(func, self._population)
             pbc["population_hv"] = self._population_hv
             pbc["population_hv_contribution"] = contribution
             pbc["selection_hv_gain"] = contribution
@@ -633,7 +709,7 @@ class Population:
             pbc["parent_selection_hv_delta"] = float(hv_delta)
         if selected:
             distances = [
-                behavior_distance(func, parent)
+                self._behavior_distance(func, parent)
                 for parent in selected
                 if getattr(parent, "pbc", None)
             ]
@@ -695,7 +771,7 @@ class Population:
             return self._behavior_diversity(func)
         distances = []
         for parent in selected:
-            distance = behavior_distance(func, parent)
+            distance = self._behavior_distance(func, parent)
             if math.isfinite(distance) and distance < 1e5:
                 distances.append(float(distance))
         if not distances:
@@ -809,41 +885,44 @@ class Population:
 
         target_preference = int(target_preference)
         selected: list[Function] = []
+        excluded_role = self._excluded_parent_role if selection_num >= 3 else None
+        target_count = min(selection_num - int(excluded_role is not None), len(self._population))
 
-        p1 = self._select_weak_preference_anchor(target_preference)
-        selected.append(p1)
-        self._set_parent_selection_role(
-            p1,
-            role="weak_preference_anchor",
-            target_preference=target_preference,
-            selected=[],
-        )
+        if excluded_role != PARENT_ROLE_WEAK_ANCHOR:
+            p1 = self._select_weak_preference_anchor(target_preference)
+            selected.append(p1)
+            self._set_parent_selection_role(
+                p1,
+                role=PARENT_ROLE_WEAK_ANCHOR,
+                target_preference=target_preference,
+                selected=[],
+            )
 
-        if len(selected) < min(selection_num, len(self._population)):
+        if excluded_role != PARENT_ROLE_HV_COMPLEMENT and len(selected) < target_count:
             p2, hv_delta = self._select_hv_complement(selected)
             if p2 is not None:
                 self._set_parent_selection_role(
                     p2,
-                    role="hv_complement",
+                    role=PARENT_ROLE_HV_COMPLEMENT,
                     target_preference=target_preference,
                     selected=selected,
                     hv_delta=hv_delta,
                 )
                 selected.append(p2)
 
-        if len(selected) < min(selection_num, len(self._population)):
+        if excluded_role != PARENT_ROLE_BEHAVIOR_COMPLEMENT and len(selected) < target_count:
             p3 = self._select_behavior_complement(selected)
             if p3 is not None:
                 self._set_parent_selection_role(
                     p3,
-                    role="behavior_complement",
+                    role=PARENT_ROLE_BEHAVIOR_COMPLEMENT,
                     target_preference=target_preference,
                     selected=selected,
                     hv_delta=self._set_hv_delta(selected, p3),
                 )
                 selected.append(p3)
 
-        while len(selected) < min(selection_num, len(self._population)):
+        while len(selected) < target_count:
             candidate, hv_delta = self._select_greedy_complement(selected, target_preference)
             if candidate is None:
                 break
@@ -856,7 +935,7 @@ class Population:
             )
             selected.append(candidate)
 
-        return selected[:selection_num]
+        return selected[:target_count]
 
     def select_parents(self, target_preference: int, selection_num: int = 3) -> list[Function]:
         if self._parent_selection_strategy == PARENT_SELECTION_LEGACY_ROLE:

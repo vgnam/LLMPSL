@@ -15,6 +15,16 @@ from llm4ad.method.LLMPFG.resume import resume_eoh as resume_llmpfg
 
 # PBC-LLM method:
 from llm4ad.method.PBCLLM import PBCLLM, PBCProfiler, resume_pbcllm
+from llm4ad.method.PBCLLM.population import (
+    BEHAVIOR_DISTANCE_DTW,
+    BEHAVIOR_DISTANCE_EUCLIDEAN,
+    PARENT_ROLE_BEHAVIOR_COMPLEMENT,
+    PARENT_ROLE_HV_COMPLEMENT,
+    PARENT_ROLE_WEAK_ANCHOR,
+    SURVIVOR_SELECTION_BEHAVIOR_ONLY,
+    SURVIVOR_SELECTION_CONTRIBUTION_BEHAVIOR,
+    SURVIVOR_SELECTION_HV_ONLY,
+)
 from llm4ad.method.eoh import EoH, EoHProfiler, resume_eoh
 from llm4ad.method.funsearch import FunSearch, resume_funsearch
 from llm4ad.method.funsearch.profiler import FunSearchProfiler
@@ -75,6 +85,43 @@ METHOD_LOG_LABELS = {
 
 SCALAR_HV_BASELINES = {"eoh", "funsearch", "reevo"}
 VECTOR_QT_BASELINES = {"meoh", "nsga2", "moead"}
+PBCLLM_ABLATION_CONFIGS = {
+    "none": {
+        "survivor_selection_strategy": SURVIVOR_SELECTION_CONTRIBUTION_BEHAVIOR,
+        "behavior_distance_metric": BEHAVIOR_DISTANCE_DTW,
+        "excluded_parent_role": None,
+    },
+    "only_hv_contribution": {
+        "survivor_selection_strategy": SURVIVOR_SELECTION_HV_ONLY,
+        "behavior_distance_metric": BEHAVIOR_DISTANCE_DTW,
+        "excluded_parent_role": None,
+    },
+    "only_behavior_diversity": {
+        "survivor_selection_strategy": SURVIVOR_SELECTION_BEHAVIOR_ONLY,
+        "behavior_distance_metric": BEHAVIOR_DISTANCE_DTW,
+        "excluded_parent_role": None,
+    },
+    "euclidean_instead_of_dtw": {
+        "survivor_selection_strategy": SURVIVOR_SELECTION_CONTRIBUTION_BEHAVIOR,
+        "behavior_distance_metric": BEHAVIOR_DISTANCE_EUCLIDEAN,
+        "excluded_parent_role": None,
+    },
+    "no_weak_anchor": {
+        "survivor_selection_strategy": SURVIVOR_SELECTION_CONTRIBUTION_BEHAVIOR,
+        "behavior_distance_metric": BEHAVIOR_DISTANCE_DTW,
+        "excluded_parent_role": PARENT_ROLE_WEAK_ANCHOR,
+    },
+    "no_hv_complement": {
+        "survivor_selection_strategy": SURVIVOR_SELECTION_CONTRIBUTION_BEHAVIOR,
+        "behavior_distance_metric": BEHAVIOR_DISTANCE_DTW,
+        "excluded_parent_role": PARENT_ROLE_HV_COMPLEMENT,
+    },
+    "no_behavior_complement": {
+        "survivor_selection_strategy": SURVIVOR_SELECTION_CONTRIBUTION_BEHAVIOR,
+        "behavior_distance_metric": BEHAVIOR_DISTANCE_DTW,
+        "excluded_parent_role": PARENT_ROLE_BEHAVIOR_COMPLEMENT,
+    },
+}
 RESUME_HANDLERS = {
     "mpage": lambda method, _: resume_llmpfg(method),
     "llmpfg": lambda method, _: resume_llmpfg(method),
@@ -262,6 +309,12 @@ def parse_args():
             "reconstructed programs, evaluation results, and PBC analysis."
         ),
     )
+    parser.add_argument(
+        "--pbcllm-ablation",
+        choices=tuple(PBCLLM_ABLATION_CONFIGS),
+        default="none",
+        help="Run one PBCLLM ablation while leaving all other PBCLLM mechanisms unchanged.",
+    )
     return parser.parse_args()
 
 
@@ -386,6 +439,7 @@ def build_method(method_name, llm, llm_cluster, task, args):
                   )
 
     if method_name == "pbcllm":
+        ablation_kwargs = PBCLLM_ABLATION_CONFIGS[args.pbcllm_ablation]
         return PBCLLM(llm=llm,
                       llm_cluster=llm_cluster,
                       profiler=PBCProfiler(
@@ -406,6 +460,7 @@ def build_method(method_name, llm, llm_cluster, task, args):
                       elites_per_preference=2,
                       parent_selection_strategy=args.pbcllm_parent_selection,
                       debug_output=args.pbcllm_debug_output,
+                      **ablation_kwargs,
                     )
 
     max_samples = args.max_sample_nums if args.max_sample_nums is not None else 200

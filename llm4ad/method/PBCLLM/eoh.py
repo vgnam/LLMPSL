@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import copy
 import json
+import logging
 import random
 import time
 import traceback
@@ -194,6 +195,9 @@ class PBCLLM:
         cluster_distance: float = 0.35,
         elites_per_preference: int = 2,
         parent_selection_strategy: str = "complementary_behavior",
+        survivor_selection_strategy: str = "contribution_behavior",
+        behavior_distance_metric: str = "dtw",
+        excluded_parent_role: str | None = None,
         rho: float = 0.05,
         debug_mode: bool = False,
         debug_output: bool = False,
@@ -237,6 +241,9 @@ class PBCLLM:
         self._use_m1_operator = bool(use_m1_operator)
         self._use_m2_operator = bool(use_m2_operator)
         self._parent_selection_strategy = str(parent_selection_strategy)
+        self._survivor_selection_strategy = str(survivor_selection_strategy)
+        self._behavior_distance_metric = str(behavior_distance_metric)
+        self._excluded_parent_role = excluded_parent_role
         self._num_samplers = int(num_samplers)
         self._num_evaluators = int(num_evaluators)
         self._isolate_seed_evaluator = multi_thread_or_process_eval == "thread"
@@ -244,6 +251,14 @@ class PBCLLM:
         self._debug_output = bool(debug_output)
         self._llm_review = bool(llm_review)
         self._tot_sample_nums = 0
+        # Counters to diagnose LLM call vs. registered sample discrepancy
+        self._llm_cluster_calls = 0
+        self._llm_sample_calls = 0
+        self._llm_sample_fail_parse = 0
+        self._llm_sample_fail_eval = 0
+        self._llm_sample_fail_pbc = 0
+        self._llm_sample_success = 0
+        self._llm_cluster_fail = 0
         self._max_consecutive_sampling_errors = int(max_consecutive_sampling_errors)
         self._sampling_error_backoff_seconds = float(sampling_error_backoff_seconds)
         if self._max_consecutive_sampling_errors < 1:
@@ -268,6 +283,9 @@ class PBCLLM:
             cluster_distance=cluster_distance,
             elites_per_preference=elites_per_preference,
             parent_selection_strategy=self._parent_selection_strategy,
+            survivor_selection_strategy=self._survivor_selection_strategy,
+            behavior_distance_metric=self._behavior_distance_metric,
+            excluded_parent_role=self._excluded_parent_role,
         )
 
         if profiler is not None:
@@ -280,6 +298,31 @@ class PBCLLM:
             else concurrent.futures.ProcessPoolExecutor
         )
         self._evaluation_executor = executor_cls(max_workers=num_evaluators)
+
+    def _sampling_summary(self) -> str:
+        return (
+            f"sample_calls={getattr(self, '_llm_sample_calls', 0)} "
+            f"valid={getattr(self, '_llm_sample_success', 0)} "
+            f"parse_fail={getattr(self, '_llm_sample_fail_parse', 0)} "
+            f"eval_fail={getattr(self, '_llm_sample_fail_eval', 0)} "
+            f"pbc_fail={getattr(self, '_llm_sample_fail_pbc', 0)} "
+            f"cluster_calls={getattr(self, '_llm_cluster_calls', 0)} "
+            f"cluster_fail={getattr(self, '_llm_cluster_fail', 0)}"
+        )
+
+    def _debug_output_enabled(self) -> bool:
+        return bool(getattr(self, "_debug_output", False))
+
+    def _record_rejection(self, counter_attr: str, reason: str) -> None:
+        count = getattr(self, counter_attr, 0) + 1
+        setattr(self, counter_attr, count)
+        if count == 1 or count % 10 == 0:
+            logging.getLogger("root").info(
+                "PBCLLM rejection: reason=%s count=%d %s",
+                reason,
+                count,
+                self._sampling_summary(),
+            )
 
     def _continue_loop(self):
         return self._max_sample_nums is None or self._tot_sample_nums < self._max_sample_nums
@@ -312,34 +355,40 @@ class PBCLLM:
     def _sample_evaluate_register(self, prompt: str):
         sample_start = time.time()
         thought, func = self._sampler.get_thought_and_function(prompt)
+        self._llm_sample_calls += 1
         sample_time = time.time() - sample_start
-        if self._debug_output:
+        if self._debug_output_enabled():
             _debug_print_block("LLM RAW RESPONSE", self._sampler.last_response)
             _debug_print_block("EXTRACTED THOUGHT", thought)
             _debug_print_block("EXTRACTED FUNCTION BODY", self._sampler.last_extracted_code)
             _debug_print_block("EXTRACTED FUNCTION", func)
-        if thought is None or func is None:
-            if self._debug_output:
-                _debug_print_block(
-                    "SAMPLE DROPPED",
-                    f"thought is None: {thought is None}\nfunc is None: {func is None}",
-                )
-            return
+        if func is None:
+            if self._debug_output_enabled():
+                _debug_print_block("SAMPLE DROPPED", "func is None")
+            self._record_rejection("_llm_sample_fail_parse", "function_parse_failed")
+            return False
+        if thought is None:
+            thought = "{Generated heuristic.}"
 
         program = TextFunctionProgramConverter.function_to_program(func, self._template_program)
-        if self._debug_output:
+        if self._debug_output_enabled():
             _debug_print_block("RECONSTRUCTED PROGRAM", program)
         if program is None:
-            if self._debug_output:
+            if self._debug_output_enabled():
                 _debug_print_block("SAMPLE DROPPED", "program is None")
-            return
+            self._record_rejection("_llm_sample_fail_parse", "program_conversion_failed")
+            return False
 
         try:
             result, eval_time = self._evaluate_program_across_seeds(program)
         except Exception:
+            self._record_rejection("_llm_sample_fail_eval", "evaluation_exception")
             if self._debug_mode:
                 traceback.print_exc()
-            return
+            return False
+        if not isinstance(result, dict):
+            self._record_rejection("_llm_sample_fail_eval", "evaluation_invalid_result")
+            return False
 
         pbc = analyze_mo_result(
             result,
@@ -350,21 +399,23 @@ class PBCLLM:
             hv_ref_point=self._hv_ref_point,
             hv_ideal_point=self._hv_ideal_point,
         )
-        if self._debug_output:
+        if self._debug_output_enabled():
             _debug_print_block("RAW EVALUATION RESULT", result)
             _debug_print_block("ANALYZED PBC", pbc)
         if pbc is None:
-            if self._debug_output:
+            if self._debug_output_enabled():
                 _debug_print_block("SAMPLE DROPPED", "pbc is None")
-            return
+            self._record_rejection("_llm_sample_fail_pbc", "pbc_analysis_failed")
+            return False
         expected_front_count = sum(result.get("instances_per_seed", []))
         if pbc.get("front_count") != expected_front_count:
-            if self._debug_output:
+            if self._debug_output_enabled():
                 _debug_print_block(
                     "SAMPLE DROPPED",
                     f"front_count={pbc.get('front_count')} expected_front_count={expected_front_count}",
                 )
-            return
+            self._record_rejection("_llm_sample_fail_pbc", "incomplete_front_count")
+            return False
 
         func.score = [-pbc["individual_hv"], pbc["coverage_loss"]]
         func.pbc = pbc
@@ -373,12 +424,14 @@ class PBCLLM:
         func.sample_time = sample_time
 
         self._tot_sample_nums += 1
+        self._llm_sample_success += 1
         self._population.register_function(func)
 
         if self._profiler is not None:
             self._profiler.register_function(func)
             if isinstance(self._profiler, PBCProfiler):
                 self._profiler.register_population(self._population)
+        return True
 
     def _init_population(self):
         while len(self._population) < self._pop_size and self._continue_loop():
@@ -447,24 +500,26 @@ class PBCLLM:
         if len(parents) < 3:
             return parents
         try:
+            self._llm_cluster_calls += 1
             prompt_cluster = EoHPrompt.get_prompt_cluster(
                 self._task_description_str,
                 parents,
                 self._function_to_evolve,
             )
             group = self._cluster_sampler.get_thought(prompt_cluster)
-            if self._debug_output:
+            if self._debug_output_enabled():
                 _debug_print_block("CLUSTER PROMPT", prompt_cluster)
                 _debug_print_block("CLUSTER RAW RESPONSE", self._cluster_sampler.last_response)
                 _debug_print_block("CLUSTER PARSED GROUP INPUT", group)
             clustered = self._select_clustered_parents(group, parents)
-            if self._debug_output:
+            if self._debug_output_enabled():
                 _debug_print_block(
                     "CLUSTER SELECTED PARENTS",
                     "\n".join(str(parent) for parent in clustered) if clustered else None,
                 )
             return clustered if clustered else parents
         except Exception:
+            self._record_rejection("_llm_cluster_fail", "cluster_call_failed")
             if self._debug_mode:
                 traceback.print_exc()
             return parents
@@ -569,9 +624,25 @@ class PBCLLM:
             self._init_population()
             self._evolve()
         finally:
+            logging.getLogger("root").info("PBCLLM sampling summary: %s", self._sampling_summary())
             try:
                 self._evaluation_executor.shutdown(cancel_futures=True)
             except Exception:
                 pass
+        self._print_llm_stats()
         if self._profiler is not None:
             self._profiler.finish()
+
+    def _print_llm_stats(self):
+        total_llm_calls = self._llm_sample_calls + self._llm_cluster_calls
+        print("\n========== PBCLLM LLM Call Statistics ==========")
+        print(f"Total LLM calls      : {total_llm_calls}")
+        print(f"  Completed samples  : {self._llm_sample_calls}")
+        print(f"    Success          : {self._llm_sample_success}")
+        print(f"    Fail (parse)     : {self._llm_sample_fail_parse}")
+        print(f"    Fail (eval)      : {self._llm_sample_fail_eval}")
+        print(f"    Fail (pbc/front) : {self._llm_sample_fail_pbc}")
+        print(f"  Cluster calls      : {self._llm_cluster_calls}")
+        print(f"    Cluster failures : {self._llm_cluster_fail}")
+        print(f"Registered samples   : {self._tot_sample_nums}")
+        print(f"================================================\n")

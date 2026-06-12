@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 from pymoo.indicators.hv import HV
 
-from llm4ad.task.optimization.bi_kp.evaluation import BIKPEvaluation
+from llm4ad.task.optimization.bi_kp.evaluation import BIKPEvaluation, fixed_ideal_point
 from llm4ad.task.optimization.bi_cvrp.evaluation import BICVRPEvaluation
 from llm4ad.task.optimization.hv_utils import (
     DEFAULT_SEARCH_ITERATIONS,
@@ -42,18 +42,28 @@ class HypervolumeScalingTests(unittest.TestCase):
         self.assertGreaterEqual(normalized_hv, 0.0)
         self.assertLessEqual(normalized_hv, 1.0)
 
-    def test_bi_kp_uses_fixed_problem_size_ideal_point(self):
-        with tempfile.TemporaryDirectory() as data_dir:
-            evaluator = BIKPEvaluation(
+    def test_bi_kp_uses_run_independent_fixed_ideal_point(self):
+        with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
+            first = BIKPEvaluation(
                 problem_size=20,
                 n_instance=1,
                 seed=2025,
-                data_dir=data_dir,
+                data_dir=first_dir,
+            )
+            second = BIKPEvaluation(
+                problem_size=20,
+                n_instance=2,
+                seed=999,
+                data_dir=second_dir,
             )
 
-        np.testing.assert_array_equal(evaluator.ideal_point, [-20.0, -20.0])
-        np.testing.assert_array_equal(evaluator.normalization_ideal, evaluator.ideal_point)
-        np.testing.assert_array_equal(evaluator.normalization_nadir, evaluator.ref_point)
+        np.testing.assert_array_equal(first.ideal_point, [-11.0, -11.0])
+        np.testing.assert_array_equal(second.ideal_point, first.ideal_point)
+        np.testing.assert_array_equal(first.ideal_point, fixed_ideal_point(20))
+        self.assertEqual(first.hv_normalization_policy, "fixed_by_problem_size")
+        self.assertEqual(first.hv_fixed_ideal_magnitude_by_size[20], 11.0)
+        np.testing.assert_array_equal(first.normalization_ideal, first.ideal_point)
+        np.testing.assert_array_equal(first.normalization_nadir, first.ref_point)
 
     def test_all_non_bi_tsp_evaluators_use_paper_search_budget(self):
         with tempfile.TemporaryDirectory() as tri_dir, tempfile.TemporaryDirectory() as cvrp_dir, tempfile.TemporaryDirectory() as kp_dir:

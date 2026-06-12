@@ -19,6 +19,10 @@ _FULL_PBC_FIELDS = (
 )
 
 
+class PBCLLMRebuildError(ValueError):
+    """A saved heuristic can no longer produce valid PBCLLM behavior state."""
+
+
 def _order_from_name(name: str, prefix: str) -> int | None:
     if not name.startswith(prefix) or not name.endswith(".json"):
         return None
@@ -117,7 +121,7 @@ def _validate_full_pbc_state(record: dict, pbcllm, source: str) -> None:
 def _rebuild_pbc(func, pbcllm, source: str) -> dict:
     program = tfpc.function_to_program(func, pbcllm._template_program)
     if program is None:
-        raise ValueError(f"Could not create a program while rebuilding PBCLLM state from {source}.")
+        raise PBCLLMRebuildError(f"Could not create a program while rebuilding PBCLLM state from {source}.")
 
     result, eval_time = pbcllm._evaluate_program_across_seeds(program)
     pbc = analyze_mo_result(
@@ -130,10 +134,10 @@ def _rebuild_pbc(func, pbcllm, source: str) -> dict:
         hv_ideal_point=getattr(pbcllm, "_hv_ideal_point", None),
     )
     if pbc is None:
-        raise ValueError(f"Could not rebuild valid PBCLLM behavior state from {source}.")
+        raise PBCLLMRebuildError(f"Could not rebuild valid PBCLLM behavior state from {source}.")
     expected_front_count = sum((result or {}).get("instances_per_seed", []))
     if pbc.get("front_count") != expected_front_count:
-        raise ValueError(f"Incomplete PBCLLM behavior state rebuilt from {source}.")
+        raise PBCLLMRebuildError(f"Incomplete PBCLLM behavior state rebuilt from {source}.")
 
     func.evaluate_time = eval_time
     func.score = [-pbc["individual_hv"], pbc["coverage_loss"]]
@@ -143,10 +147,10 @@ def _rebuild_pbc(func, pbcllm, source: str) -> dict:
 def _restore_function(record: dict, pbcllm, source: str, pbc_cache: dict[str, dict]):
     func_text = record.get("function")
     if not func_text:
-        raise ValueError(f"Missing function text in PBCLLM resume record: {source}")
+        raise PBCLLMRebuildError(f"Missing function text in PBCLLM resume record: {source}")
     func = tfpc.text_to_function(func_text)
     if func is None:
-        raise ValueError(f"Could not parse function in PBCLLM resume record: {source}")
+        raise PBCLLMRebuildError(f"Could not parse function in PBCLLM resume record: {source}")
 
     rebuilt = False
     if func_text in pbc_cache:
@@ -170,7 +174,7 @@ def _restore_function(record: dict, pbcllm, source: str, pbc_cache: dict[str, di
     return func, rebuilt
 
 
-def _resume_population(log_path: str, pbcllm, pbc_cache: dict[str, dict]) -> tuple[int, int, int]:
+def _resume_population(log_path: str, pbcllm, pbc_cache: dict[str, dict]) -> tuple[int, int, int, int]:
     latest = _get_latest_pop_json(log_path)
     pop = pbcllm._population
     pop._population = []
@@ -180,7 +184,7 @@ def _resume_population(log_path: str, pbcllm, pbc_cache: dict[str, dict]) -> tup
         pop._generation = 0
         pop._refresh_population_metrics()
         print("RESUME PBCLLM: No population checkpoint; restoring from generation 0.", flush=True)
-        return 0, 0, 0
+        return 0, 0, 0, 0
 
     path, max_gen = latest
     records = _load_json_records(path)
@@ -192,14 +196,27 @@ def _resume_population(log_path: str, pbcllm, pbc_cache: dict[str, dict]) -> tup
 
     pop._generation = max_gen
     rebuilt_count = 0
+    skipped_count = 0
     for idx, record in enumerate(records, start=1):
-        func, rebuilt = _restore_function(record, pbcllm, f"{path} record {idx}", pbc_cache)
+        source = f"{path} record {idx}"
+        try:
+            func, rebuilt = _restore_function(record, pbcllm, source, pbc_cache)
+        except PBCLLMRebuildError as exc:
+            skipped_count += 1
+            print(f"RESUME PBCLLM: Skipping invalid old-log record from {source}: {exc}", flush=True)
+            continue
         pop._population.append(func)
         rebuilt_count += int(rebuilt)
+    if not pop._population:
+        raise ValueError(f"Could not restore any valid PBCLLM functions from {path}.")
     pop._refresh_population_metrics()
 
-    print(f"RESUME PBCLLM: Restored generation={max_gen}.", flush=True)
-    return max_gen, max_gen * pop._pop_size, rebuilt_count
+    print(
+        f"RESUME PBCLLM: Restored generation={max_gen} with "
+        f"{len(pop._population)}/{pop._pop_size} valid functions.",
+        flush=True,
+    )
+    return max_gen, max_gen * pop._pop_size, rebuilt_count, skipped_count
 
 
 def _resume_pending_samples(
@@ -207,22 +224,29 @@ def _resume_pending_samples(
     pbcllm,
     checkpoint_sample_order: int,
     pbc_cache: dict[str, dict],
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     restored = 0
     rebuilt_count = 0
+    skipped_count = 0
     profiler = pbcllm._profiler
     for idx, record in enumerate(records, start=1):
         order = _sample_order(record, idx)
         if order <= checkpoint_sample_order:
             continue
         old_generation = pbcllm._population.generation
-        func, rebuilt = _restore_function(record, pbcllm, f"sample_order={order}", pbc_cache)
+        source = f"sample_order={order}"
+        try:
+            func, rebuilt = _restore_function(record, pbcllm, source, pbc_cache)
+        except PBCLLMRebuildError as exc:
+            skipped_count += 1
+            print(f"RESUME PBCLLM: Skipping invalid old-log record from {source}: {exc}", flush=True)
+            continue
         pbcllm._population.register_function(func)
         restored += 1
         rebuilt_count += int(rebuilt)
         if pbcllm._population.generation > old_generation:
             profiler.register_population(pbcllm._population)
-    return restored, rebuilt_count
+    return restored, rebuilt_count, skipped_count
 
 
 def resume_pbcllm(pbcllm):
@@ -231,7 +255,7 @@ def resume_pbcllm(pbcllm):
 
     log_path = pbcllm._profiler._log_dir
     pbc_cache: dict[str, dict] = {}
-    max_gen, checkpoint_sample_order, rebuilt_population = _resume_population(
+    max_gen, checkpoint_sample_order, rebuilt_population, skipped_population = _resume_population(
         log_path,
         pbcllm,
         pbc_cache,
@@ -246,7 +270,7 @@ def resume_pbcllm(pbcllm):
         )
 
     pbcllm._profiler._cur_gen = max_gen
-    pending_count, rebuilt_pending = _resume_pending_samples(
+    pending_count, rebuilt_pending, skipped_pending = _resume_pending_samples(
         records,
         pbcllm,
         checkpoint_sample_order,
@@ -263,6 +287,7 @@ def resume_pbcllm(pbcllm):
     print(
         f"RESUME PBCLLM: Restored {pending_count} pending functions; "
         f"re-evaluated {rebuilt_population + rebuilt_pending} old-log functions; "
+        f"skipped {skipped_population + skipped_pending} invalid old-log functions; "
         f"sample_order={max_sample_order}.",
         flush=True,
     )
